@@ -94,6 +94,8 @@ def _parse_args() -> argparse.Namespace:
     p_run.add_argument("--agent-a-model-path", type=str, default=None)
     p_run.add_argument("--agent-b-model-path", type=str, default=None)
     p_run.add_argument("--num-gpus", type=int, default=None)
+    p_run.add_argument("--torch-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
+    p_run.add_argument("--low-cpu-mem-usage", action=argparse.BooleanOptionalAction, default=True)
     p_run.add_argument("--temperature", type=float, default=0.6)
     p_run.add_argument("--top-p", type=float, default=0.9)
     p_run.add_argument("--llm-max-new-tokens", type=int, default=256)
@@ -115,6 +117,8 @@ def _parse_args() -> argparse.Namespace:
     p_full.add_argument("--agent-a-model-path", type=str, default=None)
     p_full.add_argument("--agent-b-model-path", type=str, default=None)
     p_full.add_argument("--num-gpus", type=int, default=None)
+    p_full.add_argument("--torch-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
+    p_full.add_argument("--low-cpu-mem-usage", action=argparse.BooleanOptionalAction, default=True)
     p_full.add_argument("--temperature", type=float, default=0.6)
     p_full.add_argument("--top-p", type=float, default=0.9)
     p_full.add_argument("--llm-max-new-tokens", type=int, default=256)
@@ -158,6 +162,36 @@ def _resolve_run_id(
 
 def _build_both_llms(args: argparse.Namespace):
     a_path, b_path = _resolve_model_paths(args)
+    same_model_path = (
+        a_path is not None
+        and b_path is not None
+        and Path(a_path).expanduser().resolve(strict=False) == Path(b_path).expanduser().resolve(strict=False)
+    )
+
+    if args.llm_backend == "hf" and same_model_path:
+        shared_device_map, placement = _resolve_shared_hf_device_map(args)
+        print(
+            f"[INIT] placement strategy={placement.get('strategy')} "
+            f"agent_a={shared_device_map} agent_b={shared_device_map}",
+            flush=True,
+        )
+        print(f"[INIT] loading shared model path={a_path} device={shared_device_map}", flush=True)
+
+        shared_model = build_llm(
+            backend=args.llm_backend,
+            name="agent_shared",
+            model_path=a_path,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            allow_dummy_fallback=args.allow_dummy_fallback,
+            device_map=shared_device_map,
+            torch_dtype=args.torch_dtype,
+            low_cpu_mem_usage=args.low_cpu_mem_usage,
+            max_memory=None,
+        )
+        placement["shared_model_instance"] = True
+        return shared_model, shared_model, placement
+
     a_device_map, b_device_map, placement = _resolve_agent_device_maps(args)
     print(
         f"[INIT] placement strategy={placement.get('strategy')} "
@@ -174,37 +208,73 @@ def _build_both_llms(args: argparse.Namespace):
         top_p=args.top_p,
         allow_dummy_fallback=args.allow_dummy_fallback,
         device_map=a_device_map,
+        torch_dtype=args.torch_dtype,
+        low_cpu_mem_usage=args.low_cpu_mem_usage,
+        max_memory=None,
     )
-
-    same_model_path = (
-        a_path is not None
-        and b_path is not None
-        and Path(a_path).expanduser().resolve(strict=False) == Path(b_path).expanduser().resolve(strict=False)
+    placement["shared_model_instance"] = False
+    print(f"[INIT] loading agent_b model path={b_path} device={b_device_map}", flush=True)
+    llm_b = build_llm(
+        backend=args.llm_backend,
+        name="agent_b",
+        model_path=b_path,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        allow_dummy_fallback=args.allow_dummy_fallback,
+        device_map=b_device_map,
+        torch_dtype=args.torch_dtype,
+        low_cpu_mem_usage=args.low_cpu_mem_usage,
+        max_memory=None,
     )
-    can_share_model_instance = (
-        args.llm_backend == "hf"
-        and same_model_path
-        and a_device_map == b_device_map
-        and type(llm_a).__name__ == "HFLocalLLM"
-    )
-
-    if can_share_model_instance:
-        llm_b = llm_a
-        placement["shared_model_instance"] = True
-        print("[INIT] reusing same HF model instance for agent_b", flush=True)
-    else:
-        placement["shared_model_instance"] = False
-        print(f"[INIT] loading agent_b model path={b_path} device={b_device_map}", flush=True)
-        llm_b = build_llm(
-            backend=args.llm_backend,
-            name="agent_b",
-            model_path=b_path,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            allow_dummy_fallback=args.allow_dummy_fallback,
-            device_map=b_device_map,
-        )
     return llm_a, llm_b, placement
+
+
+def _resolve_shared_hf_device_map(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    if args.num_gpus is not None and args.num_gpus < 0:
+        raise ValueError("--num-gpus must be >= 0")
+
+    if args.num_gpus is None:
+        return (
+            args.device_map,
+            {
+                "strategy": "shared-model-manual-device-map",
+                "num_gpus_requested": None,
+                "agent_a_device_map": args.device_map,
+                "agent_b_device_map": args.device_map,
+            },
+        )
+
+    if args.num_gpus == 0:
+        return (
+            "cpu",
+            {
+                "strategy": "shared-model-cpu",
+                "num_gpus_requested": 0,
+                "agent_a_device_map": "cpu",
+                "agent_b_device_map": "cpu",
+            },
+        )
+
+    if args.num_gpus == 1:
+        return (
+            "cuda:0",
+            {
+                "strategy": "shared-model-single-gpu",
+                "num_gpus_requested": 1,
+                "agent_a_device_map": "cuda:0",
+                "agent_b_device_map": "cuda:0",
+            },
+        )
+
+    return (
+        "auto",
+        {
+            "strategy": "shared-model-auto-shard",
+            "num_gpus_requested": args.num_gpus,
+            "agent_a_device_map": "auto",
+            "agent_b_device_map": "auto",
+        },
+    )
 
 
 def _resolve_agent_device_maps(args: argparse.Namespace) -> tuple[str, str, dict[str, Any]]:
@@ -379,6 +449,8 @@ def _run_with_existing_dataset(args: argparse.Namespace) -> None:
             "llm_backend": args.llm_backend,
             "num_gpus": args.num_gpus,
             "agent_placement": placement,
+            "torch_dtype": args.torch_dtype,
+            "low_cpu_mem_usage": args.low_cpu_mem_usage,
             "model_path": args.model_path,
             "agent_a_model_path": args.agent_a_model_path,
             "agent_b_model_path": args.agent_b_model_path,
@@ -458,6 +530,8 @@ def _run_full(args: argparse.Namespace) -> None:
             "llm_backend": args.llm_backend,
             "num_gpus": args.num_gpus,
             "agent_placement": placement,
+            "torch_dtype": args.torch_dtype,
+            "low_cpu_mem_usage": args.low_cpu_mem_usage,
             "model_path": args.model_path,
             "agent_a_model_path": args.agent_a_model_path,
             "agent_b_model_path": args.agent_b_model_path,

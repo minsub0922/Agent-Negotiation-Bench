@@ -38,6 +38,7 @@ python -m src.main run \
   --run-id run_modelA_modelB_ds1 \
   --llm-backend hf \
   --num-gpus 2 \
+  --torch-dtype bfloat16 \
   --agent-a-model-path /absolute/path/to/model_a \
   --agent-b-model-path /absolute/path/to/model_b \
   --llm-max-new-tokens 256 \
@@ -53,6 +54,7 @@ python -m src.main run \
   --dataset-id ds_paper_v1 \
   --llm-backend hf \
   --num-gpus 1 \
+  --torch-dtype bfloat16 \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --max-steps 40 \
@@ -82,6 +84,7 @@ python -m src.main full \
   --dataset-output data/scenarios.jsonl \
   --llm-backend hf \
   --num-gpus 2 \
+  --torch-dtype bfloat16 \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --output-dir outputs
@@ -131,7 +134,10 @@ python -m src.main full \
 - `--num-gpus`를 지정하면 agent 배치는 자동으로 결정됩니다.
   - `--num-gpus 0`: 두 agent 모두 CPU
   - `--num-gpus 1`: 두 agent 모두 `cuda:0`
-  - `--num-gpus 2` 이상: `agent_a -> cuda:0`, `agent_b -> cuda:1`
+  - `--num-gpus 2` 이상:
+    - 동일 모델 경로(`--model-path` 공유): 모델 1개를 `auto`로 샤딩해 두 agent가 공유
+    - 서로 다른 모델 경로: `agent_a -> cuda:0`, `agent_b -> cuda:1`
 - 실제 배치 결과는 실행 로그의 `[PLACEMENT] ...`와 `run_config.json > agent_placement`에 저장됩니다.
 - 동일 모델 경로 + 동일 GPU 배치(예: `--num-gpus 1` + `--model-path ...`)이면 모델 인스턴스를 자동으로 공유해서 로딩 시간과 VRAM 사용량을 줄입니다.
 - 14B 모델에서 속도가 느리면 `--llm-max-new-tokens 64` 또는 `96`으로 낮춰 먼저 점검하세요.
+- OOM이 나면 `--torch-dtype bfloat16`(H100 권장), `--llm-max-new-tokens 64`, `--max-steps 20`으로 먼저 안정화하세요.

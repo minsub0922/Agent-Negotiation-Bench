@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Protocol
@@ -44,7 +45,13 @@ class HFLocalLLM:
         top_p: float = 0.9,
         trust_remote_code: bool = True,
         device_map: str = "auto",
+        torch_dtype: str = "auto",
+        low_cpu_mem_usage: bool = True,
+        max_memory: dict[int | str, str] | None = None,
     ):
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+        import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
         self.name = name
@@ -59,10 +66,14 @@ class HFLocalLLM:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         resolved_device_map = self._resolve_device_map(device_map)
+        resolved_torch_dtype = self._resolve_torch_dtype(torch_dtype, torch)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=trust_remote_code,
             device_map=resolved_device_map,
+            torch_dtype=resolved_torch_dtype,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            max_memory=max_memory,
         )
 
         self.generator = pipeline(
@@ -93,6 +104,19 @@ class HFLocalLLM:
             return {"": int(lowered)}
         return device_map
 
+    @staticmethod
+    def _resolve_torch_dtype(torch_dtype: str, torch):
+        lowered = str(torch_dtype).strip().lower()
+        if lowered == "auto":
+            return "auto"
+        if lowered in {"bf16", "bfloat16"}:
+            return torch.bfloat16
+        if lowered in {"fp16", "float16", "half"}:
+            return torch.float16
+        if lowered in {"fp32", "float32"}:
+            return torch.float32
+        raise ValueError(f"Unsupported torch_dtype: {torch_dtype}")
+
     def generate(self, prompt: str, max_new_tokens: int = 256) -> LLMResult:
         out = self.generator(
             prompt,
@@ -119,6 +143,9 @@ def build_llm(
     top_p: float,
     allow_dummy_fallback: bool,
     device_map: str,
+    torch_dtype: str = "auto",
+    low_cpu_mem_usage: bool = True,
+    max_memory: dict[int | str, str] | None = None,
 ) -> LLMBackend:
     normalized = backend.lower().strip()
     if normalized == "dummy":
@@ -137,6 +164,9 @@ def build_llm(
             temperature=temperature,
             top_p=top_p,
             device_map=device_map,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            max_memory=max_memory,
         )
     except Exception:
         if not allow_dummy_fallback:
