@@ -108,6 +108,8 @@ def _to_chat_only_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prefix = f"{speaker}:"
         if message.lower().startswith(prefix.lower()):
             message = message[len(prefix) :].strip()
+        if event.get("kind") == "response" and event.get("decision"):
+            message = f"[{event['decision']}] {message}"
         turn += 1
         chat.append(
             {
@@ -383,6 +385,7 @@ def run_single_scenario(
     seed: int,
     llm_max_new_tokens: int,
     decision_policy: str,
+    require_explicit_accept: bool,
 ) -> dict[str, Any]:
     issues = [
         make_issue(scenario["destinations"], name="destination"),
@@ -407,6 +410,7 @@ def run_single_scenario(
         rng=rng,
         llm_max_new_tokens=llm_max_new_tokens,
         decision_policy=decision_policy,
+        require_explicit_accept=require_explicit_accept,
         name="agent_a",
     )
     neg_b = LLMCalendarNegotiator(
@@ -417,6 +421,7 @@ def run_single_scenario(
         rng=rng,
         llm_max_new_tokens=llm_max_new_tokens,
         decision_policy=decision_policy,
+        require_explicit_accept=require_explicit_accept,
         name="agent_b",
     )
 
@@ -633,6 +638,7 @@ def run_experiment(
     seed: int,
     llm_max_new_tokens: int,
     decision_policy: str,
+    require_explicit_accept: bool,
 ) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -652,6 +658,7 @@ def run_experiment(
             seed=seed + idx,
             llm_max_new_tokens=llm_max_new_tokens,
             decision_policy=decision_policy,
+            require_explicit_accept=require_explicit_accept,
         )
         scenario_reports.append(scenario_report)
         all_metrics.append(scenario_report["metrics"])

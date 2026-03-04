@@ -44,6 +44,7 @@ class LLMCalendarNegotiator(SAONegotiator):
         llm_max_new_tokens: int = 256,
         decision_policy: str = "llm-hybrid",
         offer_top_k: int = 4,
+        require_explicit_accept: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -55,6 +56,7 @@ class LLMCalendarNegotiator(SAONegotiator):
         self.llm_max_new_tokens = llm_max_new_tokens
         self.decision_policy = decision_policy
         self.offer_top_k = max(1, int(offer_top_k))
+        self.require_explicit_accept = bool(require_explicit_accept)
 
         if self.decision_policy not in {"heuristic", "llm-hybrid", "llm-only"}:
             raise ValueError(f"Unsupported decision_policy: {self.decision_policy}")
@@ -202,6 +204,16 @@ class LLMCalendarNegotiator(SAONegotiator):
 
         if self.decision_policy == "heuristic":
             return heuristic, "heuristic"
+
+        if self.require_explicit_accept:
+            # Safety-first: only explicit ACCEPT can produce agreement.
+            if parsed_action == ResponseType.ACCEPT_OFFER:
+                if self.decision_policy == "llm-hybrid" and utility <= self._reservation_value - 0.08:
+                    return ResponseType.REJECT_OFFER, "explicit-accept-blocked-low-utility"
+                return ResponseType.ACCEPT_OFFER, "explicit-accept"
+            if parsed_action == ResponseType.REJECT_OFFER:
+                return ResponseType.REJECT_OFFER, "explicit-reject"
+            return ResponseType.REJECT_OFFER, "no-explicit-accept"
 
         if parsed_action is None:
             if self.decision_policy == "llm-only":

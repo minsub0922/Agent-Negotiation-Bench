@@ -40,6 +40,7 @@ python -m src.main run \
   --num-gpus 2 \
   --torch-dtype bfloat16 \
   --decision-policy llm-hybrid \
+  --require-explicit-accept \
   --agent-a-model-path /absolute/path/to/model_a \
   --agent-b-model-path /absolute/path/to/model_b \
   --llm-max-new-tokens 256 \
@@ -57,6 +58,7 @@ python -m src.main run \
   --num-gpus 1 \
   --torch-dtype bfloat16 \
   --decision-policy llm-hybrid \
+  --require-explicit-accept \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --max-steps 40 \
@@ -88,6 +90,7 @@ python -m src.main full \
   --num-gpus 2 \
   --torch-dtype bfloat16 \
   --decision-policy llm-hybrid \
+  --require-explicit-accept \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --output-dir outputs
@@ -149,3 +152,4 @@ python -m src.main full \
   - `heuristic`: 기존처럼 효용 기반 규칙만 사용
   - `llm-hybrid`: LLM 출력 + 최소 가드레일
   - `llm-only`: LLM 출력 중심으로 결정
+- `--require-explicit-accept` 기본값은 `True`입니다. 모델이 명시적으로 `ACTION: ACCEPT`를 출력하지 않으면 합의로 처리하지 않습니다.
