@@ -1,0 +1,10 @@
+{
+  "dataset_id": "ds_test_55",
+  "dataset_path": "data/scenarios_ds55.jsonl",
+  "dataset_file_hash_sha1_10": "ab3b108410",
+  "num_scenarios": 2,
+  "seed": 55,
+  "horizon_days": 14,
+  "source_command": "generate-dataset",
+  "generated_at": "2026-03-04T11:41:00.949839"
+}

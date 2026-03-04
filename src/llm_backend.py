@@ -58,10 +58,11 @@ class HFLocalLLM:
         if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token_id is not None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        resolved_device_map = self._resolve_device_map(device_map)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=trust_remote_code,
-            device_map=device_map,
+            device_map=resolved_device_map,
         )
 
         self.generator = pipeline(
@@ -77,6 +78,20 @@ class HFLocalLLM:
         if not lines:
             return ""
         return " ".join(lines)
+
+    @staticmethod
+    def _resolve_device_map(device_map: str):
+        lowered = str(device_map).strip().lower()
+        if lowered in {"auto", "balanced", "balanced_low_0", "sequential"}:
+            return lowered
+        if lowered == "cpu":
+            return {"": "cpu"}
+        if lowered.startswith("cuda:"):
+            gpu_idx = int(lowered.split(":", 1)[1])
+            return {"": gpu_idx}
+        if lowered.isdigit():
+            return {"": int(lowered)}
+        return device_map
 
     def generate(self, prompt: str, max_new_tokens: int = 256) -> LLMResult:
         out = self.generator(

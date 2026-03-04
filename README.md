@@ -23,6 +23,7 @@ python -m src.main generate-dataset \
   --num-scenarios 30 \
   --seed 42 \
   --horizon-days 14 \
+  --dataset-id ds_paper_v1 \
   --output data/scenarios.jsonl
 ```
 
@@ -33,7 +34,10 @@ python -m src.main generate-dataset \
 ```bash
 python -m src.main run \
   --dataset data/scenarios.jsonl \
+  --dataset-id ds_paper_v1 \
+  --run-id run_modelA_modelB_ds1 \
   --llm-backend hf \
+  --num-gpus 2 \
   --agent-a-model-path /absolute/path/to/model_a \
   --agent-b-model-path /absolute/path/to/model_b \
   --llm-max-new-tokens 256 \
@@ -46,7 +50,9 @@ python -m src.main run \
 ```bash
 python -m src.main run \
   --dataset data/scenarios.jsonl \
+  --dataset-id ds_paper_v1 \
   --llm-backend hf \
+  --num-gpus 1 \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --max-steps 40 \
@@ -58,6 +64,7 @@ python -m src.main run \
 ```bash
 python -m src.main run \
   --dataset data/scenarios.jsonl \
+  --dataset-id ds_paper_v1 \
   --llm-backend dummy \
   --llm-max-new-tokens 256 \
   --max-steps 40 \
@@ -70,8 +77,11 @@ python -m src.main run \
 python -m src.main full \
   --num-scenarios 20 \
   --seed 7 \
+  --dataset-id ds_full_v1 \
+  --run-id run_full_baseline \
   --dataset-output data/scenarios.jsonl \
   --llm-backend hf \
+  --num-gpus 2 \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --output-dir outputs
@@ -79,7 +89,7 @@ python -m src.main full \
 
 ## 출력 구조
 
-실행 시 `outputs/run_YYYYMMDD_HHMMSS/` 아래에 저장됩니다.
+실행 시 `outputs/<run_id>/` 아래에 저장됩니다. (`run_id`는 기본적으로 모델 시그니처 + dataset id를 포함해 자동 생성)
 
 - `experiment_summary.csv`: 시나리오별 정량평가 행 데이터
 - `experiment_summary.json`: 전체 평균/합의율 등 집계
@@ -87,6 +97,7 @@ python -m src.main full \
 - `quant_summary_human_readable.json`: 문자열 포맷(퍼센트 등) 적용한 정량 요약
 - `github_issue_collection.md`: 시나리오별 Issue 파일 목록 + 실험 개요
 - `run_config.json`: 실행 파라미터(모델 경로, seed, backend 등)
+- `dataset_config_snapshot.json`: 실행에 사용한 dataset 식별정보(id/hash/path) 스냅샷
 - `scenario_xxxx/scenario.json`: 해당 시나리오 원본
 - `scenario_xxxx/metrics.json`: 해당 협상 지표
 - `scenario_xxxx/metrics_human_readable.md`: 시나리오 단위 정량 요약
@@ -115,3 +126,10 @@ python -m src.main full \
 - LLM 응답은 협상 발화 생성에 사용되며, 제안/수락 결정은 `negmas` 협상자 전략(`LLMCalendarNegotiator`)과 효용함수에 따라 이루어집니다.
 - 답변 잘림을 줄이기 위해 기본 `--llm-max-new-tokens` 값을 256으로 높였고, 출력 후처리에서 길이 하드컷을 제거했습니다.
 - 로컬 모델 메모리 사용량이 큰 경우 `--allow-dummy-fallback` 옵션을 사용해 점검 가능합니다.
+- `run`/`full` 실행 시 자동 생성되는 `run_id`에는 모델 시그니처 + dataset id가 포함됩니다(원하면 `--run-id`로 직접 지정 가능).
+- 데이터셋 생성 시 `<dataset>.config.json` 파일이 함께 저장되며, `dataset_id`/hash/seed 등을 기록합니다.
+- `--num-gpus`를 지정하면 agent 배치는 자동으로 결정됩니다.
+  - `--num-gpus 0`: 두 agent 모두 CPU
+  - `--num-gpus 1`: 두 agent 모두 `cuda:0`
+  - `--num-gpus 2` 이상: `agent_a -> cuda:0`, `agent_b -> cuda:1`
+- 실제 배치 결과는 실행 로그의 `[PLACEMENT] ...`와 `run_config.json > agent_placement`에 저장됩니다.

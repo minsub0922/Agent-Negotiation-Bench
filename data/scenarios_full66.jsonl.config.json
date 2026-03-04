@@ -1,0 +1,10 @@
+{
+  "dataset_id": "ds_full_66",
+  "dataset_path": "data/scenarios_full66.jsonl",
+  "dataset_file_hash_sha1_10": "7692888ebe",
+  "num_scenarios": 1,
+  "seed": 66,
+  "horizon_days": 14,
+  "source_command": "full",
+  "generated_at": "2026-03-04T11:41:08.146603"
+}
