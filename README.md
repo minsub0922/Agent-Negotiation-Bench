@@ -39,6 +39,7 @@ python -m src.main run \
   --llm-backend hf \
   --num-gpus 2 \
   --torch-dtype bfloat16 \
+  --decision-policy llm-hybrid \
   --agent-a-model-path /absolute/path/to/model_a \
   --agent-b-model-path /absolute/path/to/model_b \
   --llm-max-new-tokens 256 \
@@ -55,6 +56,7 @@ python -m src.main run \
   --llm-backend hf \
   --num-gpus 1 \
   --torch-dtype bfloat16 \
+  --decision-policy llm-hybrid \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --max-steps 40 \
@@ -85,6 +87,7 @@ python -m src.main full \
   --llm-backend hf \
   --num-gpus 2 \
   --torch-dtype bfloat16 \
+  --decision-policy llm-hybrid \
   --model-path /absolute/path/to/model \
   --llm-max-new-tokens 256 \
   --output-dir outputs
@@ -106,6 +109,7 @@ python -m src.main full \
 - `scenario_xxxx/metrics_human_readable.md`: 시나리오 단위 정량 요약
 - `scenario_xxxx/negmas_trace.jsonl`: `negmas` 레벨 협상 trace
 - `scenario_xxxx/agent_event_log.jsonl`: agent propose/respond + LLM prompt/raw 응답 포함 상세 로그
+  - `decision_source`, `llm_action`, `llm_choice`, `offer_candidates` 필드로 실제 의사결정 출처 추적 가능
 - `scenario_xxxx/dialogue_human_readable.json`: 사람이 읽기 쉬운 대화 로그 + 각 턴 효용
 - `scenario_xxxx/chat_transcript.json`: 메시지만 포함한 채팅형 로그(JSON)
 - `scenario_xxxx/chat_transcript.txt`: 메시지만 포함한 채팅형 로그(TXT)
@@ -141,3 +145,7 @@ python -m src.main full \
 - 동일 모델 경로 + 동일 GPU 배치(예: `--num-gpus 1` + `--model-path ...`)이면 모델 인스턴스를 자동으로 공유해서 로딩 시간과 VRAM 사용량을 줄입니다.
 - 14B 모델에서 속도가 느리면 `--llm-max-new-tokens 64` 또는 `96`으로 낮춰 먼저 점검하세요.
 - OOM이 나면 `--torch-dtype bfloat16`(H100 권장), `--llm-max-new-tokens 64`, `--max-steps 20`으로 먼저 안정화하세요.
+- `--decision-policy` 기본값은 `llm-hybrid`이며, 모델 출력이 제안 선택/수락 결정에 반영됩니다.
+  - `heuristic`: 기존처럼 효용 기반 규칙만 사용
+  - `llm-hybrid`: LLM 출력 + 최소 가드레일
+  - `llm-only`: LLM 출력 중심으로 결정

@@ -99,6 +99,7 @@ def _parse_args() -> argparse.Namespace:
     p_run.add_argument("--temperature", type=float, default=0.6)
     p_run.add_argument("--top-p", type=float, default=0.9)
     p_run.add_argument("--llm-max-new-tokens", type=int, default=256)
+    p_run.add_argument("--decision-policy", choices=["heuristic", "llm-hybrid", "llm-only"], default="llm-hybrid")
     p_run.add_argument("--device-map", type=str, default="auto")
     p_run.add_argument("--allow-dummy-fallback", action="store_true")
 
@@ -122,6 +123,7 @@ def _parse_args() -> argparse.Namespace:
     p_full.add_argument("--temperature", type=float, default=0.6)
     p_full.add_argument("--top-p", type=float, default=0.9)
     p_full.add_argument("--llm-max-new-tokens", type=int, default=256)
+    p_full.add_argument("--decision-policy", choices=["heuristic", "llm-hybrid", "llm-only"], default="llm-hybrid")
     p_full.add_argument("--device-map", type=str, default="auto")
     p_full.add_argument("--allow-dummy-fallback", action="store_true")
 
@@ -422,6 +424,7 @@ def _run_with_existing_dataset(args: argparse.Namespace) -> None:
         max_steps=args.max_steps,
         seed=args.seed,
         llm_max_new_tokens=args.llm_max_new_tokens,
+        decision_policy=args.decision_policy,
     )
 
     dataset_snapshot = dataset_cfg or {
@@ -457,6 +460,7 @@ def _run_with_existing_dataset(args: argparse.Namespace) -> None:
             "temperature": args.temperature,
             "top_p": args.top_p,
             "llm_max_new_tokens": args.llm_max_new_tokens,
+            "decision_policy": args.decision_policy,
             "device_map": args.device_map,
             "max_steps": args.max_steps,
             "seed": args.seed,
@@ -511,6 +515,7 @@ def _run_full(args: argparse.Namespace) -> None:
         max_steps=args.max_steps,
         seed=args.seed,
         llm_max_new_tokens=args.llm_max_new_tokens,
+        decision_policy=args.decision_policy,
     )
 
     _json_dump(output_root / "dataset_config_snapshot.json", dataset_cfg)
@@ -538,6 +543,7 @@ def _run_full(args: argparse.Namespace) -> None:
             "temperature": args.temperature,
             "top_p": args.top_p,
             "llm_max_new_tokens": args.llm_max_new_tokens,
+            "decision_policy": args.decision_policy,
             "device_map": args.device_map,
             "max_steps": args.max_steps,
             "seed": args.seed,

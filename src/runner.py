@@ -203,10 +203,22 @@ def _build_issue_bundle(
     trace_rows: list[dict[str, Any]],
     agent_events: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    result_line = f"[Result] {_itinerary_summary(metrics)}"
+    chat_with_result = list(chat_turns)
+    chat_with_result.append(
+        {
+            "turn": len(chat_turns) + 1,
+            "speaker": "result",
+            "message": result_line,
+            "kind": "result",
+        }
+    )
     return {
         "scenario_id": scenario["scenario_id"],
         "result_summary": _itinerary_summary(metrics),
+        "chat_result_line": result_line,
         "chat_transcript": chat_turns,
+        "chat_transcript_with_result": chat_with_result,
         "quantitative_metrics": metrics,
         "detailed_json": {
             "scenario": scenario,
@@ -221,6 +233,7 @@ def _build_issue_md(issue_bundle: dict[str, Any]) -> str:
     scenario_id = issue_bundle["scenario_id"]
     metrics = issue_bundle["quantitative_metrics"]
     chat_turns = issue_bundle["chat_transcript"]
+    chat_result_line = issue_bundle.get("chat_result_line", f"[Result] {issue_bundle['result_summary']}")
     detailed_json = issue_bundle["detailed_json"]
 
     lines = [
@@ -242,6 +255,7 @@ def _build_issue_md(issue_bundle: dict[str, Any]) -> str:
             lines.append(f"> **{turn['turn']}. {turn['speaker']}**: {turn['message']}")
     else:
         lines.append("> 대화 내역이 비어 있습니다.")
+    lines.append(f"> {chat_result_line}")
 
     lines.extend(
         [
@@ -368,6 +382,7 @@ def run_single_scenario(
     max_steps: int,
     seed: int,
     llm_max_new_tokens: int,
+    decision_policy: str,
 ) -> dict[str, Any]:
     issues = [
         make_issue(scenario["destinations"], name="destination"),
@@ -391,6 +406,7 @@ def run_single_scenario(
         profile=profile_a,
         rng=rng,
         llm_max_new_tokens=llm_max_new_tokens,
+        decision_policy=decision_policy,
         name="agent_a",
     )
     neg_b = LLMCalendarNegotiator(
@@ -400,6 +416,7 @@ def run_single_scenario(
         profile=profile_b,
         rng=rng,
         llm_max_new_tokens=llm_max_new_tokens,
+        decision_policy=decision_policy,
         name="agent_b",
     )
 
@@ -615,6 +632,7 @@ def run_experiment(
     max_steps: int,
     seed: int,
     llm_max_new_tokens: int,
+    decision_policy: str,
 ) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -633,6 +651,7 @@ def run_experiment(
             max_steps=max_steps,
             seed=seed + idx,
             llm_max_new_tokens=llm_max_new_tokens,
+            decision_policy=decision_policy,
         )
         scenario_reports.append(scenario_report)
         all_metrics.append(scenario_report["metrics"])

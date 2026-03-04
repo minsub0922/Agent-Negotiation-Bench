@@ -27,12 +27,25 @@ class DummyLLM:
 
     def generate(self, prompt: str, max_new_tokens: int = 256) -> LLMResult:
         normalized = re.sub(r"\s+", " ", prompt.strip())
-        if "결정: 수락" in normalized:
-            text = f"{self.name}: 제안을 수락합니다. 이 일정이 현재 조건에서 가장 균형이 좋습니다."
-        elif "결정: 거절" in normalized:
-            text = f"{self.name}: 아직 제약 조건이 맞지 않아 이번 제안은 조정이 필요합니다."
+        if "choice:" in normalized.lower():
+            text = (
+                "CHOICE: 1\n"
+                "MESSAGE: 제안 후보 중에서 현재 일정 충돌을 줄일 수 있는 선택지를 우선 제시하겠습니다."
+            )
+        elif "action: accept or reject" in normalized.lower():
+            u_match = re.search(r"내 효용:\\s*([0-9]*\\.?[0-9]+)", normalized)
+            t_match = re.search(r"수락 기준:\\s*([0-9]*\\.?[0-9]+)", normalized)
+            utility = float(u_match.group(1)) if u_match else 0.0
+            threshold = float(t_match.group(1)) if t_match else 0.5
+            action = "ACCEPT" if utility >= threshold else "REJECT"
+            msg = (
+                "이 조건이면 수락 가능합니다."
+                if action == "ACCEPT"
+                else "현재 기준에는 부족해 조건 조정이 필요합니다."
+            )
+            text = f"ACTION: {action}\\nMESSAGE: {msg}"
         else:
-            text = f"{self.name}: 이 제안이 서로의 일정 충돌을 줄이는 현실적인 선택이라고 봅니다."
+            text = f"MESSAGE: {self.name}: 제약을 반영해 균형 잡힌 선택을 하겠습니다."
         return LLMResult(text=text, raw_text=text, prompt=prompt, backend="dummy")
 
 
