@@ -5,6 +5,7 @@ import json
 import random
 from datetime import datetime
 from pathlib import Path
+import time
 from typing import Any
 
 from negmas import LinearAdditiveUtilityFunction, SAOMechanism, make_issue
@@ -619,7 +620,11 @@ def run_experiment(
 
     scenario_reports: list[dict[str, Any]] = []
     all_metrics: list[dict[str, Any]] = []
+    total = len(scenarios)
     for idx, scenario in enumerate(scenarios):
+        scenario_id = scenario.get("scenario_id", f"scenario_{idx+1:04d}")
+        t0 = time.time()
+        print(f"[SCENARIO][{idx+1}/{total}] start id={scenario_id}", flush=True)
         scenario_report = run_single_scenario(
             scenario=scenario,
             llm_a=llm_a,
@@ -631,6 +636,14 @@ def run_experiment(
         )
         scenario_reports.append(scenario_report)
         all_metrics.append(scenario_report["metrics"])
+        elapsed = time.time() - t0
+        metric = scenario_report["metrics"]
+        print(
+            f"[SCENARIO][{idx+1}/{total}] done id={scenario_id} "
+            f"agreement={metric.get('agreement_reached')} steps={metric.get('negotiation_steps')} "
+            f"elapsed_sec={elapsed:.1f}",
+            flush=True,
+        )
 
     _write_summary_csv(output_root / "experiment_summary.csv", all_metrics)
 

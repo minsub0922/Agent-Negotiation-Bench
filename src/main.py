@@ -159,7 +159,13 @@ def _resolve_run_id(
 def _build_both_llms(args: argparse.Namespace):
     a_path, b_path = _resolve_model_paths(args)
     a_device_map, b_device_map, placement = _resolve_agent_device_maps(args)
+    print(
+        f"[INIT] placement strategy={placement.get('strategy')} "
+        f"agent_a={a_device_map} agent_b={b_device_map}",
+        flush=True,
+    )
 
+    print(f"[INIT] loading agent_a model path={a_path} device={a_device_map}", flush=True)
     llm_a = build_llm(
         backend=args.llm_backend,
         name="agent_a",
@@ -169,15 +175,35 @@ def _build_both_llms(args: argparse.Namespace):
         allow_dummy_fallback=args.allow_dummy_fallback,
         device_map=a_device_map,
     )
-    llm_b = build_llm(
-        backend=args.llm_backend,
-        name="agent_b",
-        model_path=b_path,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        allow_dummy_fallback=args.allow_dummy_fallback,
-        device_map=b_device_map,
+
+    same_model_path = (
+        a_path is not None
+        and b_path is not None
+        and Path(a_path).expanduser().resolve(strict=False) == Path(b_path).expanduser().resolve(strict=False)
     )
+    can_share_model_instance = (
+        args.llm_backend == "hf"
+        and same_model_path
+        and a_device_map == b_device_map
+        and type(llm_a).__name__ == "HFLocalLLM"
+    )
+
+    if can_share_model_instance:
+        llm_b = llm_a
+        placement["shared_model_instance"] = True
+        print("[INIT] reusing same HF model instance for agent_b", flush=True)
+    else:
+        placement["shared_model_instance"] = False
+        print(f"[INIT] loading agent_b model path={b_path} device={b_device_map}", flush=True)
+        llm_b = build_llm(
+            backend=args.llm_backend,
+            name="agent_b",
+            model_path=b_path,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            allow_dummy_fallback=args.allow_dummy_fallback,
+            device_map=b_device_map,
+        )
     return llm_a, llm_b, placement
 
 

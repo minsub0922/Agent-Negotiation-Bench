@@ -133,3 +133,5 @@ python -m src.main full \
   - `--num-gpus 1`: 두 agent 모두 `cuda:0`
   - `--num-gpus 2` 이상: `agent_a -> cuda:0`, `agent_b -> cuda:1`
 - 실제 배치 결과는 실행 로그의 `[PLACEMENT] ...`와 `run_config.json > agent_placement`에 저장됩니다.
+- 동일 모델 경로 + 동일 GPU 배치(예: `--num-gpus 1` + `--model-path ...`)이면 모델 인스턴스를 자동으로 공유해서 로딩 시간과 VRAM 사용량을 줄입니다.
+- 14B 모델에서 속도가 느리면 `--llm-max-new-tokens 64` 또는 `96`으로 낮춰 먼저 점검하세요.

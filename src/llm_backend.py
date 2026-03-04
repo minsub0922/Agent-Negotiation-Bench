@@ -102,6 +102,7 @@ class HFLocalLLM:
             top_p=self.top_p,
             return_full_text=False,
             pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
         )
         raw = out[0]["generated_text"] if out else ""
         cleaned = self._clean_text(raw)
