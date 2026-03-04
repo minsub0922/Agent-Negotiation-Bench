@@ -129,13 +129,13 @@ def _to_chat_only_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _itinerary_summary(metrics: dict[str, Any]) -> str:
     if not metrics.get("agreement_reached"):
-        return "합의 실패"
+        return "No agreement"
     itinerary = metrics.get("agreement_itinerary") or {}
     if not itinerary:
-        return "합의 성공 (세부 일정 정보 없음)"
+        return "Agreement reached (no detailed itinerary info)"
     return (
-        f"합의 성공: {itinerary.get('destination')} / {itinerary.get('travel_window')} "
-        f"(day {itinerary.get('start_day')}, {itinerary.get('duration_days')}일) / budget={itinerary.get('budget')}"
+        f"Agreement reached: {itinerary.get('destination')} / {itinerary.get('travel_window')} "
+        f"(day {itinerary.get('start_day')}, {itinerary.get('duration_days')} days) / budget={itinerary.get('budget')}"
     )
 
 
@@ -299,7 +299,7 @@ def _build_issue_md(issue_bundle: dict[str, Any]) -> str:
         for turn in chat_turns:
             lines.append(f"> **{turn['turn']}. {turn['speaker']}**: {turn['message']}")
     else:
-        lines.append("> 대화 내역이 비어 있습니다.")
+        lines.append("> The chat transcript is empty.")
     lines.append(f"> {chat_result_line}")
 
     lines.extend(
@@ -416,8 +416,8 @@ def _build_issue_collection_md(
             "",
             "## Notes",
             "",
-            "- 각 `issue_bundle.md` 파일은 GitHub Issue 본문으로 바로 붙여 넣을 수 있는 형식입니다.",
-            "- `issue_bundle.json`은 동일 내용을 구조화해 자동 파이프라인에서 재사용할 수 있습니다.",
+            "- Each `issue_bundle.md` file is formatted to be pasted directly as a GitHub Issue body.",
+            "- `issue_bundle.json` contains the same content in a structured form for automated pipelines.",
         ]
     )
     return "\n".join(lines) + "\n"

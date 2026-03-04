@@ -235,7 +235,7 @@ def _parse_args() -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    p_gen = subparsers.add_parser("generate-dataset", help="랜덤 시나리오 데이터셋 생성")
+    p_gen = subparsers.add_parser("generate-dataset", help="Generate a random scenario dataset")
     p_gen.add_argument("--num-scenarios", type=int, default=20)
     p_gen.add_argument("--num-agents", type=int, default=2)
     p_gen.add_argument("--seed", type=int, default=7)
@@ -243,11 +243,11 @@ def _parse_args() -> argparse.Namespace:
     p_gen.add_argument("--dataset-id", type=str, default=None)
     p_gen.add_argument("--output", type=Path, default=Path("data/scenarios.jsonl"))
 
-    p_run = subparsers.add_parser("run", help="기존 데이터셋으로 협상 실행")
+    p_run = subparsers.add_parser("run", help="Run negotiations using an existing dataset")
     p_run.add_argument("--dataset", type=Path, required=True)
     _add_common_run_args(p_run)
 
-    p_full = subparsers.add_parser("full", help="데이터셋 생성 + 협상 실행")
+    p_full = subparsers.add_parser("full", help="Generate a dataset and run negotiations")
     p_full.add_argument("--num-scenarios", type=int, default=20)
     p_full.add_argument("--num-agents", type=int, default=2)
     p_full.add_argument("--seed", type=int, default=7)

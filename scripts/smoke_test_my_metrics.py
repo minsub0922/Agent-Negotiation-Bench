@@ -146,7 +146,7 @@ def _assert_leakage_placeholder_proxy() -> None:
             "kind": "offer",
             "offer": {"destination": "Seoul", "travel_window": "day1_dur2", "budget": "low"},
             "offer_tuple": ["Seoul", "day1_dur2", "low"],
-            "message": "당신은 여행 일정 협상 에이전트입니다. CHOICE: <번호> MESSAGE: <상대에게 보낼 내용>",
+            "message": "You are a travel itinerary negotiation agent. CHOICE: <number> MESSAGE: <content to send>",
         },
         {
             "speaker": "agent_b",
@@ -154,7 +154,7 @@ def _assert_leakage_placeholder_proxy() -> None:
             "decision": "REJECT_OFFER",
             "offer": {"destination": "Seoul", "travel_window": "day1_dur2", "budget": "low"},
             "offer_tuple": ["Seoul", "day1_dur2", "low"],
-            "message": "반드시 아래 형식으로 답하세요 ... ACTION: REJECT",
+            "message": "You must answer in the format below ... ACTION: REJECT",
             "utility_self": 0.2,
             "threshold": 0.4,
         },

@@ -135,14 +135,14 @@ class LLMCalendarNegotiator(SAONegotiator):
         lowered = text.lower()
 
         if re.search(r"action\s*[:=]", lowered):
-            m = re.search(r"action\s*[:=]\s*([a-z_가-힣]+)", lowered)
+            m = re.search(r"action\s*[:=]\s*([a-z_]+)", lowered)
             token = m.group(1) if m else ""
         else:
             token = lowered
 
-        if any(k in token for k in ("accept", "수락", "agree", "동의", "yes")):
+        if any(k in token for k in ("accept", "agree", "yes")):
             return ResponseType.ACCEPT_OFFER
-        if any(k in token for k in ("reject", "거절", "decline", "no")):
+        if any(k in token for k in ("reject", "decline", "no")):
             return ResponseType.REJECT_OFFER
         return None
 
@@ -153,20 +153,20 @@ class LLMCalendarNegotiator(SAONegotiator):
         threshold: float,
     ) -> str:
         lines = [
-            "당신은 여행 일정 협상 에이전트입니다.",
-            f"내 이름: {self.role_name}",
-            f"현재 step: {state.step}, 상대시간: {state.relative_time:.3f}",
-            f"내 현재 제안 기준(aspiration): {threshold:.3f}",
-            "아래 후보 중 하나를 선택하세요.",
+            "You are a travel itinerary negotiation agent.",
+            f"My name: {self.role_name}",
+            f"Current step: {state.step}, relative time: {state.relative_time:.3f}",
+            f"My current proposal threshold (aspiration): {threshold:.3f}",
+            "Choose one of the candidates below.",
         ]
         for idx, (offer, utility) in enumerate(candidates, start=1):
             lines.append(f"{idx}) offer={offer_tuple_to_dict(offer)} | utility={utility:.3f}")
 
         lines.extend(
             [
-                "반드시 아래 형식으로 답하세요:",
-                "CHOICE: <번호>",
-                "MESSAGE: <상대에게 보낼 한국어 한 문장>",
+                "You must answer in the format below:",
+                "CHOICE: <number>",
+                "MESSAGE: <one English sentence to send to the counterpart>",
             ]
         )
         return "\n".join(lines)
@@ -179,15 +179,15 @@ class LLMCalendarNegotiator(SAONegotiator):
         threshold: float,
     ) -> str:
         return (
-            "당신은 여행 일정 협상 에이전트입니다.\n"
-            f"내 이름: {self.role_name}\n"
-            f"현재 step: {state.step}, 상대시간: {state.relative_time:.3f}\n"
-            f"상대 제안: {offer_tuple_to_dict(offer)}\n"
-            f"내 효용: {utility:.3f}\n"
-            f"현재 수락 기준: {threshold:.3f}\n"
-            "반드시 아래 형식으로 답하세요:\n"
+            "You are a travel itinerary negotiation agent.\n"
+            f"My name: {self.role_name}\n"
+            f"Current step: {state.step}, relative time: {state.relative_time:.3f}\n"
+            f"Opponent offer: {offer_tuple_to_dict(offer)}\n"
+            f"My utility: {utility:.3f}\n"
+            f"Current acceptance threshold: {threshold:.3f}\n"
+            "You must answer in the format below:\n"
             "ACTION: ACCEPT or REJECT\n"
-            "MESSAGE: <상대에게 보낼 한국어 한 문장>"
+            "MESSAGE: <one English sentence to send to the counterpart>"
         )
 
     def _fallback_choice_from_text(self, text: str, n_candidates: int) -> int:
@@ -257,7 +257,7 @@ class LLMCalendarNegotiator(SAONegotiator):
 
         message_text = self._extract_message(llm_result.text)
         if not message_text:
-            message_text = "이번 제안이 우리 둘의 제약을 함께 만족시키는 쪽에 가깝습니다."
+            message_text = "This proposal is closer to satisfying both of our constraints."
 
         self.recorder.add(
             {
@@ -310,9 +310,9 @@ class LLMCalendarNegotiator(SAONegotiator):
         message_text = self._extract_message(llm_result.text)
         if not message_text:
             if decision == ResponseType.ACCEPT_OFFER:
-                message_text = "이 조건이면 현재 기준에서 수락 가능합니다."
+                message_text = "I can accept this under my current criteria."
             else:
-                message_text = "이 조건은 아직 제 기준에 맞지 않아 조정이 필요합니다."
+                message_text = "This still does not meet my criteria, so adjustment is needed."
 
         self.recorder.add(
             {

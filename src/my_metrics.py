@@ -50,7 +50,7 @@ def _hangul_ratio(text: str) -> float:
     chars = [c for c in text if c.isalpha()]
     if not chars:
         return 0.0
-    hangul = sum(1 for c in chars if "가" <= c <= "힣")
+    hangul = sum(1 for c in chars if 0xAC00 <= ord(c) <= 0xD7A3)
     return hangul / len(chars)
 
 
@@ -151,6 +151,7 @@ def _valid_agreement_check(
     text = _text(accept_event.get("message"))
     if not text:
         return False
+    lowered = text.lower()
 
     mention_count = 0
     if str(x_star.get("destination", "")) and str(x_star.get("destination")) in text:
@@ -164,22 +165,22 @@ def _valid_agreement_check(
         if (
             (start_day is not None and f"{start_day}" in text)
             or (duration is not None and f"{duration}" in text)
-            or ("기간" in text)
+            or ("duration" in lowered)
         ):
             mention_count += 1
     budget_token = str(x_star.get("budget") or "")
     if budget_token and budget_token in text:
         mention_count += 1
-    elif "예산" in text:
+    elif "budget" in lowered:
         mention_count += 1
 
     return mention_count >= 2
 
 
 def _action_message_consistency(turns: list[dict[str, Any]]) -> float | None:
-    accept_terms = ["수락", "accept", "동의", "합의", "yes"]
-    reject_terms = ["거절", "reject", "수락 못", "수락못", "불가", "어렵", "no"]
-    negation_terms = ["못", "불가", "어렵", "거절", "reject", "no"]
+    accept_terms = ["accept", "agree", "approved", "yes"]
+    reject_terms = ["reject", "decline", "cannot accept", "not possible", "no"]
+    negation_terms = ["cannot", "can't", "not", "reject", "decline", "no"]
 
     tagged = [t for t in turns if t.get("action_tag") in {"ACCEPT", "REJECT"}]
     if not tagged:
@@ -202,13 +203,13 @@ def _action_message_consistency(turns: list[dict[str, Any]]) -> float | None:
 
 
 def _turn_politeness_score(text: str) -> float:
-    polite_terms = ["감사", "고맙", "부탁", "죄송", "양해", "괜찮으실까요"]
-    toxic_terms = ["병신", "바보", "멍청", "닥쳐", "꺼져", "idiot", "stupid", "fuck"]
-    command_terms = ["반드시", "해야", "해라", "must", "should"]
+    polite_terms = ["thank", "please", "sorry", "appreciate", "would you", "could you"]
+    toxic_terms = ["idiot", "stupid", "shut up", "fuck", "dumb", "moron"]
+    command_terms = ["must", "should", "have to", "need to"]
 
     score = 0.0
     lowered = text.lower()
-    if any(term in text for term in polite_terms) or re.search(r"(합니다|하세요|주세요|드립니다)\b", text):
+    if any(term in lowered for term in polite_terms):
         score += 1.0
 
     toxic_hits = sum(1 for t in toxic_terms if t in lowered)
@@ -231,14 +232,14 @@ def _specificity_score(text: str, scenario: dict[str, Any]) -> float:
     categories = 0
 
     budgets = [str(b).lower() for b in scenario.get("budgets", [])]
-    if "예산" in text or any(b in lowered for b in budgets):
+    if "budget" in lowered or any(b in lowered for b in budgets):
         categories += 1
 
     destinations = [str(d) for d in scenario.get("destinations", [])]
     if any(dest in text for dest in destinations):
         categories += 1
 
-    if re.search(r"day\d+_dur\d+", lowered) or re.search(r"\d+\s*일", text) or "기간" in text:
+    if re.search(r"day\d+_dur\d+", lowered) or re.search(r"\d+\s*days?", lowered) or "duration" in lowered:
         categories += 1
 
     return categories / 3.0
@@ -299,7 +300,7 @@ def _reason_alignment_for_event(
         return None
 
     lowered = text.lower()
-    if not any(term in lowered for term in ["예산", "기간", "목적지", "때문", "기준", "효용"]):
+    if not any(term in lowered for term in ["budget", "duration", "destination", "because", "criteria", "utility"]):
         return None
 
     speaker = str(event.get("speaker") or "")
@@ -314,7 +315,7 @@ def _reason_alignment_for_event(
     decision = _action_tag(event)
     checks: list[bool] = []
 
-    if "예산" in lowered:
+    if "budget" in lowered:
         budgets = list(scenario.get("budgets", []))
         if len(budgets) >= 2:
             pairs = []
@@ -327,7 +328,7 @@ def _reason_alignment_for_event(
             else:
                 checks.append(mono_up)
 
-    if "기간" in lowered:
+    if "duration" in lowered:
         windows = list(scenario.get("travel_windows", []))
         meta = scenario.get("travel_window_meta", {})
         duration_to_utils: dict[int, list[float]] = {}
@@ -343,7 +344,7 @@ def _reason_alignment_for_event(
             mono_up = all(items[i + 1][1] >= items[i][1] - 1e-9 for i in range(len(items) - 1))
             checks.append(mono_up)
 
-    if "목적지" in lowered:
+    if "destination" in lowered:
         destinations = list(scenario.get("destinations", []))
         if len(destinations) >= 2:
             vals = [
@@ -353,7 +354,7 @@ def _reason_alignment_for_event(
             vals_sorted = sorted(vals)
             median_v = vals_sorted[len(vals_sorted) // 2]
             current_v = float(ufun((offer["destination"], offer["travel_window"], offer["budget"])))
-            if decision == "REJECT" and any(k in lowered for k in ["바꿔", "변경", "다른"]):
+            if decision == "REJECT" and any(k in lowered for k in ["change", "switch", "different", "other"]):
                 checks.append(current_v <= median_v + 1e-9)
             elif decision == "ACCEPT":
                 checks.append(current_v >= median_v - 1e-9)
@@ -561,23 +562,23 @@ def compute_my_metrics(
     # Protocol quality
     if turns:
         leakage_patterns = [
-            "당신은 여행 일정 협상 에이전트",
-            "내 이름:",
-            "현재 step:",
-            "상대시간",
+            "you are a travel itinerary negotiation agent",
+            "my name:",
+            "current step:",
+            "relative time",
             "choice:",
             "action:",
             "thinking process",
-            "반드시 아래 형식으로 답하세요",
-            "예:",
+            "you must answer in the format below",
+            "example:",
             "```",
         ]
         placeholder_patterns = [
-            "<상대에게 보낼",
-            "<번호>",
-            "<내용>",
-            "<선택한 후보>",
-            "반드시",
+            "<one english sentence to send to the counterpart>",
+            "<number>",
+            "<content>",
+            "<selected candidate>",
+            "you must",
         ]
 
         leakage_count = 0
@@ -590,8 +591,18 @@ def compute_my_metrics(
         specificity_scores: list[float] = []
         politeness_scores: list[float] = []
 
-        toxic_terms = ["병신", "바보", "멍청", "닥쳐", "꺼져", "idiot", "stupid", "fuck"]
-        reason_terms = ["때문", "해서", "기준", "효용", "예산", "기간", "목적지", "일정", "충돌"]
+        toxic_terms = ["idiot", "stupid", "shut up", "fuck", "dumb", "moron"]
+        reason_terms = [
+            "because",
+            "therefore",
+            "criteria",
+            "utility",
+            "budget",
+            "duration",
+            "destination",
+            "schedule",
+            "conflict",
+        ]
 
         for turn in turns:
             text = turn["text"]
@@ -606,7 +617,7 @@ def compute_my_metrics(
             if _hangul_ratio(text) < 0.3:
                 non_korean_count += 1
 
-            broken_end = len(text) >= 180 and not re.search(r"([.!?]|다|요|죠|니다)\s*$", text)
+            broken_end = len(text) >= 180 and not re.search(r"([.!?])\s*$", text)
             if "(truncated" in lowered or "...(truncated" in lowered or broken_end:
                 truncated_count += 1
 

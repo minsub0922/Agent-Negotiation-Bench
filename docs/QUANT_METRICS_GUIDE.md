@@ -1,48 +1,48 @@
 # Quant Metrics Guide
 
-이 문서는 실행 결과의 정량 지표를 해석하기 위한 가이드입니다.
+This document is a guide for interpreting quantitative metrics from run outputs.
 
-## 핵심 지표
+## Core Metrics
 
-| 지표 | 의미 | 해석 포인트 |
+| Metric | Meaning | Interpretation Hint |
 |---|---|---|
-| `agreement_reached` | 해당 시나리오에서 합의 성립 여부 | `False`가 많으면 양보 전략/예약값 설정 점검 |
-| `utility_agent_a`, `utility_agent_b` | 최종 합의안에서 각 agent 효용 | 두 값 차이가 크면 불공정 가능성 |
-| `social_welfare` | `utility_agent_a + utility_agent_b` | 전체 효율성 지표 |
-| `nash_product` | `max(u_a-r_a,0) * max(u_b-r_b,0)` | 효율과 공정성 절충 지표 |
-| `pareto_optimal` | 합의안이 파레토 최적이면 `True` | `False`면 개선 가능한 합의안이 존재 |
-| `welfare_ratio_vs_best` | 전체 가능한 결과 중 최대 welfare 대비 비율 | 1.0에 가까울수록 효율적 |
-| `nash_ratio_vs_best` | 전체 가능한 결과 중 최대 Nash 대비 비율 | 1.0에 가까울수록 균형적 |
-| `negotiation_steps` | 합의/종료까지 걸린 스텝 수 | 너무 크면 탐색/양보 속도 조절 필요 |
-| `calendar_conflict_ratio_agent_a/b` | 합의된 여행일 중 busy slot 비율 | 낮을수록 캘린더 충돌이 적음 |
+| `agreement_reached` | Whether agreement was reached in the scenario | If many are `False`, review concession strategy/reservation settings |
+| `utility_agent_a`, `utility_agent_b` | Utility of each agent under the final agreement | A large gap can indicate unfairness |
+| `social_welfare` | `utility_agent_a + utility_agent_b` | Overall efficiency indicator |
+| `nash_product` | `max(u_a-r_a,0) * max(u_b-r_b,0)` | Tradeoff indicator between efficiency and fairness |
+| `pareto_optimal` | `True` if the agreement is Pareto optimal | If `False`, there exists an agreement that can improve someone without hurting others |
+| `welfare_ratio_vs_best` | Ratio against max welfare in full outcome space | Closer to 1.0 means more efficient |
+| `nash_ratio_vs_best` | Ratio against max Nash product in full outcome space | Closer to 1.0 means more balanced |
+| `negotiation_steps` | Number of steps until agreement/termination | If too large, tune exploration/concession speed |
+| `calendar_conflict_ratio_agent_a/b` | Busy-slot ratio on agreed travel days | Lower is better (fewer calendar conflicts) |
 
-## 집계 파일별 용도
+## Aggregate File Usage
 
 - `experiment_summary.csv`
-시나리오 단위 raw 수치 분석용(통계, 시각화, 회귀 등).
+For per-scenario raw numeric analysis (statistics, plotting, regression, etc.).
 
 - `experiment_summary.json`
-실험 단위 평균값/비율의 원본 숫자.
+Raw run-level aggregate numbers (means/ratios).
 
 - `quant_summary_human_readable.json`
-퍼센트/반올림 포맷을 적용한 사람이 읽기 쉬운 JSON.
+Human-readable JSON with formatting (percentages, rounding).
 
 - `quant_summary.md`
-보고서에 바로 붙일 수 있는 마크다운 요약.
+Markdown summary you can paste directly into reports.
 
 - `scenario_xxxx/metrics_human_readable.md`
-시나리오 단위 상세 요약.
+Detailed per-scenario summary.
 
-## 빠른 분석 체크리스트
+## Quick Analysis Checklist
 
-1. `agreement_rate`가 낮으면 `reservation_value`, `concession_exponent`, `max_steps`를 조정.
-2. `welfare_ratio_vs_best`는 높은데 `nash_ratio_vs_best`가 낮으면 한쪽 편향 합의 가능성 점검.
-3. `calendar_conflict_ratio_agent_a/b`가 높으면 window score 가중치 또는 캘린더 제약 반영 비중 상향.
-4. `pareto_rate`가 낮으면 제안 생성 정책(탑밴드 샘플링, aspiration 곡선) 개선 검토.
+1. If `agreement_rate` is low, adjust `reservation_value`, `concession_exponent`, and `max_steps`.
+2. If `welfare_ratio_vs_best` is high but `nash_ratio_vs_best` is low, check for one-sided agreements.
+3. If `calendar_conflict_ratio_agent_a/b` is high, increase window-score weight or calendar-constraint weight.
+4. If `pareto_rate` is low, review offer-generation policy (top-band sampling, aspiration curve).
 
-## 채팅 로그와 함께 보는 방법
+## How to Read with Chat Logs
 
-- `chat_transcript.txt`: 실제 대화 흐름 확인
-- `metrics_human_readable.md`: 같은 시나리오의 결과 지표 확인
+- `chat_transcript.txt`: Inspect actual dialogue flow
+- `metrics_human_readable.md`: Inspect quantitative results for the same scenario
 
-위 두 파일을 함께 보면 어떤 발화 패턴이 합의 효율/공정성에 영향을 주는지 빠르게 확인할 수 있습니다.
+Reading these together helps you quickly identify which utterance patterns affect agreement efficiency and fairness.

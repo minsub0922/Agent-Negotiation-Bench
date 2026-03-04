@@ -337,7 +337,7 @@ def _render_chat(
 ) -> list[str]:
     chat_turns = list(chat_payload.get("chat", []))
     result_summary = chat_payload.get("result_summary") or (
-        "합의 성공" if metrics.get("agreement_reached") else "합의 실패"
+        "Agreement reached" if metrics.get("agreement_reached") else "No agreement"
     )
 
     lines = [
