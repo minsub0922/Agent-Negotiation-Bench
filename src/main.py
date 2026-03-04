@@ -41,6 +41,7 @@ def _parse_args() -> argparse.Namespace:
     p_run.add_argument("--agent-b-model-path", type=str, default=None)
     p_run.add_argument("--temperature", type=float, default=0.6)
     p_run.add_argument("--top-p", type=float, default=0.9)
+    p_run.add_argument("--llm-max-new-tokens", type=int, default=256)
     p_run.add_argument("--device-map", type=str, default="auto")
     p_run.add_argument("--allow-dummy-fallback", action="store_true")
 
@@ -58,6 +59,7 @@ def _parse_args() -> argparse.Namespace:
     p_full.add_argument("--agent-b-model-path", type=str, default=None)
     p_full.add_argument("--temperature", type=float, default=0.6)
     p_full.add_argument("--top-p", type=float, default=0.9)
+    p_full.add_argument("--llm-max-new-tokens", type=int, default=256)
     p_full.add_argument("--device-map", type=str, default="auto")
     p_full.add_argument("--allow-dummy-fallback", action="store_true")
 
@@ -111,6 +113,7 @@ def _run_with_existing_dataset(args: argparse.Namespace) -> None:
         llm_b=llm_b,
         max_steps=args.max_steps,
         seed=args.seed,
+        llm_max_new_tokens=args.llm_max_new_tokens,
     )
     _save_run_config(
         output_root,
@@ -124,6 +127,7 @@ def _run_with_existing_dataset(args: argparse.Namespace) -> None:
             "agent_b_model_path": args.agent_b_model_path,
             "temperature": args.temperature,
             "top_p": args.top_p,
+            "llm_max_new_tokens": args.llm_max_new_tokens,
             "device_map": args.device_map,
             "max_steps": args.max_steps,
             "seed": args.seed,
@@ -154,6 +158,7 @@ def _run_full(args: argparse.Namespace) -> None:
         llm_b=llm_b,
         max_steps=args.max_steps,
         seed=args.seed,
+        llm_max_new_tokens=args.llm_max_new_tokens,
     )
     _save_run_config(
         output_root,
@@ -168,6 +173,7 @@ def _run_full(args: argparse.Namespace) -> None:
             "agent_b_model_path": args.agent_b_model_path,
             "temperature": args.temperature,
             "top_p": args.top_p,
+            "llm_max_new_tokens": args.llm_max_new_tokens,
             "device_map": args.device_map,
             "max_steps": args.max_steps,
             "seed": args.seed,

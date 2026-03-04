@@ -14,10 +14,14 @@ from .llm_backend import LLMBackend
 from .negotiation import ISSUE_NAMES, EventRecorder, LLMCalendarNegotiator
 
 
+def _json_dumps(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
 def _json_dump(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write(_json_dumps(data))
 
 
 def _jsonl_dump(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -25,6 +29,11 @@ def _jsonl_dump(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _text_dump(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def _build_ufun(profile: dict[str, Any], issues: list[Any]) -> LinearAdditiveUtilityFunction:
@@ -86,6 +95,270 @@ def _trace_to_json(trace, scenario: dict[str, Any], ufun_a, ufun_b) -> dict[str,
     }
 
 
+def _to_chat_only_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    chat: list[dict[str, Any]] = []
+    turn = 0
+    for event in events:
+        speaker = str(event["speaker"])
+        message = str(event.get("message") or "").strip()
+        if not message:
+            continue
+        # Remove duplicated speaker prefix such as "agent_a: ..." for cleaner chat output.
+        prefix = f"{speaker}:"
+        if message.lower().startswith(prefix.lower()):
+            message = message[len(prefix) :].strip()
+        turn += 1
+        chat.append(
+            {
+                "turn": turn,
+                "speaker": speaker,
+                "message": message,
+            }
+        )
+    return chat
+
+
+def _itinerary_summary(metrics: dict[str, Any]) -> str:
+    if not metrics.get("agreement_reached"):
+        return "합의 실패"
+    itinerary = metrics.get("agreement_itinerary") or {}
+    if not itinerary:
+        return "합의 성공 (세부 일정 정보 없음)"
+    return (
+        f"합의 성공: {itinerary.get('destination')} / {itinerary.get('travel_window')} "
+        f"(day {itinerary.get('start_day')}, {itinerary.get('duration_days')}일) / budget={itinerary.get('budget')}"
+    )
+
+
+def _fmt_num(value: Any, digits: int = 4) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.{digits}f}"
+
+
+def _fmt_pct(value: Any, digits: int = 2) -> str:
+    if value is None:
+        return "-"
+    return f"{100.0 * float(value):.{digits}f}%"
+
+
+def _fmt_bool(value: bool) -> str:
+    return "Yes" if bool(value) else "No"
+
+
+def _scenario_metrics_md(scenario_id: str, metrics: dict[str, Any]) -> str:
+    lines = [
+        f"# Scenario Quant Summary: {scenario_id}",
+        "",
+        f"- Agreement: {_fmt_bool(metrics['agreement_reached'])}",
+        f"- Pareto Optimal: {_fmt_bool(metrics['pareto_optimal'])}",
+        f"- Result: {_itinerary_summary(metrics)}",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Negotiation Steps | {_fmt_num(metrics['negotiation_steps'], 0)} |",
+        f"| Utility Agent A | {_fmt_num(metrics['utility_agent_a'])} |",
+        f"| Utility Agent B | {_fmt_num(metrics['utility_agent_b'])} |",
+        f"| Social Welfare | {_fmt_num(metrics['social_welfare'])} |",
+        f"| Nash Product | {_fmt_num(metrics['nash_product'])} |",
+        f"| Welfare Ratio vs Best | {_fmt_pct(metrics['welfare_ratio_vs_best'])} |",
+        f"| Nash Ratio vs Best | {_fmt_pct(metrics['nash_ratio_vs_best'])} |",
+        f"| Fairness Gap | {_fmt_num(metrics['fairness_gap'])} |",
+        f"| Calendar Conflict A | {_fmt_pct(metrics['calendar_conflict_ratio_agent_a'])} |",
+        f"| Calendar Conflict B | {_fmt_pct(metrics['calendar_conflict_ratio_agent_b'])} |",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _write_chat_outputs(
+    scenario_out: Path,
+    scenario_id: str,
+    chat_turns: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    _json_dump(
+        scenario_out / "chat_transcript.json",
+        {
+            "scenario_id": scenario_id,
+            "chat": chat_turns,
+            "result_summary": _itinerary_summary(metrics),
+        },
+    )
+
+    lines = [f"[Scenario] {scenario_id}", ""]
+    for turn in chat_turns:
+        lines.append(f"{turn['speaker']}: {turn['message']}")
+    lines.append("")
+    lines.append(f"[Result] {_itinerary_summary(metrics)}")
+
+    _text_dump(scenario_out / "chat_transcript.txt", "\n".join(lines) + "\n")
+
+
+def _build_issue_bundle(
+    scenario: dict[str, Any],
+    metrics: dict[str, Any],
+    chat_turns: list[dict[str, Any]],
+    human_dialogue: list[dict[str, Any]],
+    trace_rows: list[dict[str, Any]],
+    agent_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "scenario_id": scenario["scenario_id"],
+        "result_summary": _itinerary_summary(metrics),
+        "chat_transcript": chat_turns,
+        "quantitative_metrics": metrics,
+        "detailed_json": {
+            "scenario": scenario,
+            "dialogue_human_readable": human_dialogue,
+            "agent_event_log": agent_events,
+            "negmas_trace": trace_rows,
+        },
+    }
+
+
+def _build_issue_md(issue_bundle: dict[str, Any]) -> str:
+    scenario_id = issue_bundle["scenario_id"]
+    metrics = issue_bundle["quantitative_metrics"]
+    chat_turns = issue_bundle["chat_transcript"]
+    detailed_json = issue_bundle["detailed_json"]
+
+    lines = [
+        f"# [Negotiation Report] {scenario_id}",
+        "",
+        "## Summary",
+        "",
+        f"- Result: {issue_bundle['result_summary']}",
+        f"- Agreement: {_fmt_bool(metrics['agreement_reached'])}",
+        f"- Pareto Optimal: {_fmt_bool(metrics['pareto_optimal'])}",
+        f"- Steps: {_fmt_num(metrics['negotiation_steps'], 0)}",
+        "",
+        "## Chat Transcript",
+        "",
+    ]
+
+    if chat_turns:
+        for turn in chat_turns:
+            lines.append(f"> **{turn['turn']}. {turn['speaker']}**: {turn['message']}")
+    else:
+        lines.append("> 대화 내역이 비어 있습니다.")
+
+    lines.extend(
+        [
+            "",
+            "## Quantitative Scores",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| Utility Agent A | {_fmt_num(metrics['utility_agent_a'])} |",
+            f"| Utility Agent B | {_fmt_num(metrics['utility_agent_b'])} |",
+            f"| Social Welfare | {_fmt_num(metrics['social_welfare'])} |",
+            f"| Nash Product | {_fmt_num(metrics['nash_product'])} |",
+            f"| Welfare Ratio vs Best | {_fmt_pct(metrics['welfare_ratio_vs_best'])} |",
+            f"| Nash Ratio vs Best | {_fmt_pct(metrics['nash_ratio_vs_best'])} |",
+            f"| Fairness Gap | {_fmt_num(metrics['fairness_gap'])} |",
+            f"| Calendar Conflict A | {_fmt_pct(metrics['calendar_conflict_ratio_agent_a'])} |",
+            f"| Calendar Conflict B | {_fmt_pct(metrics['calendar_conflict_ratio_agent_b'])} |",
+            "",
+            "## Detailed JSON",
+            "",
+            "<details>",
+            "<summary><code>quantitative_metrics</code></summary>",
+            "",
+            "```json",
+            _json_dumps(metrics),
+            "```",
+            "",
+            "</details>",
+            "",
+            "<details>",
+            "<summary><code>detailed_json.scenario</code></summary>",
+            "",
+            "```json",
+            _json_dumps(detailed_json["scenario"]),
+            "```",
+            "",
+            "</details>",
+            "",
+            "<details>",
+            "<summary><code>detailed_json.dialogue_human_readable</code></summary>",
+            "",
+            "```json",
+            _json_dumps(detailed_json["dialogue_human_readable"]),
+            "```",
+            "",
+            "</details>",
+            "",
+            "<details>",
+            "<summary><code>detailed_json.agent_event_log</code></summary>",
+            "",
+            "```json",
+            _json_dumps(detailed_json["agent_event_log"]),
+            "```",
+            "",
+            "</details>",
+            "",
+            "<details>",
+            "<summary><code>detailed_json.negmas_trace</code></summary>",
+            "",
+            "```json",
+            _json_dumps(detailed_json["negmas_trace"]),
+            "```",
+            "",
+            "</details>",
+        ]
+    )
+
+    return "\n".join(lines) + "\n"
+
+
+def _build_issue_collection_md(
+    scenario_reports: list[dict[str, Any]],
+    aggregate: dict[str, Any],
+) -> str:
+    lines = [
+        "# GitHub Issue Collection",
+        "",
+        "## Experiment Overview",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Num Scenarios | {aggregate.get('num_scenarios', '-')} |",
+        f"| Agreement Rate | {_fmt_pct(aggregate.get('agreement_rate'))} |",
+        f"| Pareto Rate | {_fmt_pct(aggregate.get('pareto_rate'))} |",
+        f"| Avg Steps | {_fmt_num(aggregate.get('avg_steps'), 2)} |",
+        f"| Avg Social Welfare | {_fmt_num(aggregate.get('avg_social_welfare'))} |",
+        f"| Avg Nash Product | {_fmt_num(aggregate.get('avg_nash_product'))} |",
+        "",
+        "## Scenario Issue Files",
+        "",
+        "| Scenario | Issue Markdown | Issue JSON | Result |",
+        "|---|---|---|---|",
+    ]
+
+    for report in scenario_reports:
+        md_path = f"{report['scenario_id']}/{report['issue_md_file']}"
+        json_path = f"{report['scenario_id']}/{report['issue_json_file']}"
+        lines.append(
+            "| {sid} | `{md}` | `{js}` | {res} |".format(
+                sid=report["scenario_id"],
+                md=md_path,
+                js=json_path,
+                res=report["result_summary"],
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Notes",
+            "",
+            "- 각 `issue_bundle.md` 파일은 GitHub Issue 본문으로 바로 붙여 넣을 수 있는 형식입니다.",
+            "- `issue_bundle.json`은 동일 내용을 구조화해 자동 파이프라인에서 재사용할 수 있습니다.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def run_single_scenario(
     scenario: dict[str, Any],
     llm_a: LLMBackend,
@@ -93,6 +366,7 @@ def run_single_scenario(
     output_dir: Path,
     max_steps: int,
     seed: int,
+    llm_max_new_tokens: int,
 ) -> dict[str, Any]:
     issues = [
         make_issue(scenario["destinations"], name="destination"),
@@ -115,6 +389,7 @@ def run_single_scenario(
         role_name="agent_a",
         profile=profile_a,
         rng=rng,
+        llm_max_new_tokens=llm_max_new_tokens,
         name="agent_a",
     )
     neg_b = LLMCalendarNegotiator(
@@ -123,6 +398,7 @@ def run_single_scenario(
         role_name="agent_b",
         profile=profile_b,
         rng=rng,
+        llm_max_new_tokens=llm_max_new_tokens,
         name="agent_b",
     )
 
@@ -163,10 +439,43 @@ def run_single_scenario(
             "metrics": metrics,
         },
     )
+
+    chat_turns = _to_chat_only_turns(human_dialogue)
+    _write_chat_outputs(
+        scenario_out=scenario_out,
+        scenario_id=scenario["scenario_id"],
+        chat_turns=chat_turns,
+        metrics=metrics,
+    )
+
     _json_dump(scenario_out / "metrics.json", metrics)
+    _text_dump(
+        scenario_out / "metrics_human_readable.md",
+        _scenario_metrics_md(scenario_id=scenario["scenario_id"], metrics=metrics),
+    )
     _json_dump(scenario_out / "scenario.json", scenario)
 
-    return metrics
+    issue_bundle = _build_issue_bundle(
+        scenario=scenario,
+        metrics=metrics,
+        chat_turns=chat_turns,
+        human_dialogue=human_dialogue,
+        trace_rows=trace_rows,
+        agent_events=recorder.events,
+    )
+
+    issue_json_file = "issue_bundle.json"
+    issue_md_file = "issue_bundle.md"
+    _json_dump(scenario_out / issue_json_file, issue_bundle)
+    _text_dump(scenario_out / issue_md_file, _build_issue_md(issue_bundle))
+
+    return {
+        "scenario_id": scenario["scenario_id"],
+        "metrics": metrics,
+        "result_summary": issue_bundle["result_summary"],
+        "issue_json_file": issue_json_file,
+        "issue_md_file": issue_md_file,
+    }
 
 
 def _write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -193,10 +502,17 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             return None
         return sum(values) / len(values)
 
+    def _avg_non_null(values: list[Any]) -> float | None:
+        clean = [float(v) for v in values if v is not None]
+        if not clean:
+            return None
+        return sum(clean) / len(clean)
+
     return {
         "run_at": datetime.now().isoformat(),
         "num_scenarios": len(rows),
         "agreement_rate": len(reached) / len(rows),
+        "pareto_rate": sum(1 for row in rows if row.get("pareto_optimal")) / len(rows),
         "avg_social_welfare": _avg([float(r["social_welfare"]) for r in rows]),
         "avg_nash_product": _avg([float(r["nash_product"]) for r in rows]),
         "avg_steps": _avg([float(r["negotiation_steps"]) for r in rows]),
@@ -204,7 +520,90 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_nash_ratio_vs_best": _avg([float(r["nash_ratio_vs_best"]) for r in rows]),
         "avg_utility_agent_a": _avg([float(r["utility_agent_a"]) for r in rows]),
         "avg_utility_agent_b": _avg([float(r["utility_agent_b"]) for r in rows]),
+        "avg_calendar_conflict_agent_a": _avg_non_null([r.get("calendar_conflict_ratio_agent_a") for r in rows]),
+        "avg_calendar_conflict_agent_b": _avg_non_null([r.get("calendar_conflict_ratio_agent_b") for r in rows]),
     }
+
+
+def _build_quant_pretty(aggregate: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    overview = {
+        "num_scenarios": aggregate.get("num_scenarios"),
+        "agreement_rate": _fmt_pct(aggregate.get("agreement_rate")),
+        "pareto_rate": _fmt_pct(aggregate.get("pareto_rate")),
+        "avg_steps": _fmt_num(aggregate.get("avg_steps"), 2),
+        "avg_social_welfare": _fmt_num(aggregate.get("avg_social_welfare"), 4),
+        "avg_nash_product": _fmt_num(aggregate.get("avg_nash_product"), 4),
+        "avg_welfare_ratio_vs_best": _fmt_pct(aggregate.get("avg_welfare_ratio_vs_best")),
+        "avg_nash_ratio_vs_best": _fmt_pct(aggregate.get("avg_nash_ratio_vs_best")),
+        "avg_calendar_conflict_agent_a": _fmt_pct(aggregate.get("avg_calendar_conflict_agent_a")),
+        "avg_calendar_conflict_agent_b": _fmt_pct(aggregate.get("avg_calendar_conflict_agent_b")),
+    }
+
+    scenarios = []
+    for row in rows:
+        scenarios.append(
+            {
+                "scenario_id": row.get("scenario_id"),
+                "agreement": _fmt_bool(bool(row.get("agreement_reached"))),
+                "pareto": _fmt_bool(bool(row.get("pareto_optimal"))),
+                "steps": _fmt_num(row.get("negotiation_steps"), 0),
+                "utility_agent_a": _fmt_num(row.get("utility_agent_a")),
+                "utility_agent_b": _fmt_num(row.get("utility_agent_b")),
+                "social_welfare": _fmt_num(row.get("social_welfare")),
+                "nash_product": _fmt_num(row.get("nash_product")),
+                "welfare_ratio_vs_best": _fmt_pct(row.get("welfare_ratio_vs_best")),
+                "nash_ratio_vs_best": _fmt_pct(row.get("nash_ratio_vs_best")),
+            }
+        )
+
+    return {
+        "overview": overview,
+        "scenario_rows": scenarios,
+    }
+
+
+def _build_quant_summary_md(aggregate: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Quantitative Summary",
+        "",
+        "## Overall",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Num Scenarios | {aggregate.get('num_scenarios', '-')} |",
+        f"| Agreement Rate | {_fmt_pct(aggregate.get('agreement_rate'))} |",
+        f"| Pareto Rate | {_fmt_pct(aggregate.get('pareto_rate'))} |",
+        f"| Avg Steps | {_fmt_num(aggregate.get('avg_steps'), 2)} |",
+        f"| Avg Social Welfare | {_fmt_num(aggregate.get('avg_social_welfare'))} |",
+        f"| Avg Nash Product | {_fmt_num(aggregate.get('avg_nash_product'))} |",
+        f"| Avg Welfare Ratio vs Best | {_fmt_pct(aggregate.get('avg_welfare_ratio_vs_best'))} |",
+        f"| Avg Nash Ratio vs Best | {_fmt_pct(aggregate.get('avg_nash_ratio_vs_best'))} |",
+        f"| Avg Calendar Conflict A | {_fmt_pct(aggregate.get('avg_calendar_conflict_agent_a'))} |",
+        f"| Avg Calendar Conflict B | {_fmt_pct(aggregate.get('avg_calendar_conflict_agent_b'))} |",
+        "",
+        "## Scenario Table",
+        "",
+        "| Scenario | Agree | Pareto | Steps | u_A | u_B | Welfare | Nash | Welfare/Best | Nash/Best |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+
+    for row in rows:
+        lines.append(
+            "| {sid} | {agr} | {par} | {st} | {ua} | {ub} | {sw} | {np} | {wr} | {nr} |".format(
+                sid=row.get("scenario_id", "-"),
+                agr=_fmt_bool(bool(row.get("agreement_reached"))),
+                par=_fmt_bool(bool(row.get("pareto_optimal"))),
+                st=_fmt_num(row.get("negotiation_steps"), 0),
+                ua=_fmt_num(row.get("utility_agent_a")),
+                ub=_fmt_num(row.get("utility_agent_b")),
+                sw=_fmt_num(row.get("social_welfare")),
+                np=_fmt_num(row.get("nash_product")),
+                wr=_fmt_pct(row.get("welfare_ratio_vs_best")),
+                nr=_fmt_pct(row.get("nash_ratio_vs_best")),
+            )
+        )
+
+    return "\n".join(lines) + "\n"
 
 
 def run_experiment(
@@ -214,26 +613,40 @@ def run_experiment(
     llm_b: LLMBackend,
     max_steps: int,
     seed: int,
+    llm_max_new_tokens: int,
 ) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
 
+    scenario_reports: list[dict[str, Any]] = []
     all_metrics: list[dict[str, Any]] = []
     for idx, scenario in enumerate(scenarios):
-        metric = run_single_scenario(
+        scenario_report = run_single_scenario(
             scenario=scenario,
             llm_a=llm_a,
             llm_b=llm_b,
             output_dir=output_root,
             max_steps=max_steps,
             seed=seed + idx,
+            llm_max_new_tokens=llm_max_new_tokens,
         )
-        all_metrics.append(metric)
+        scenario_reports.append(scenario_report)
+        all_metrics.append(scenario_report["metrics"])
 
     _write_summary_csv(output_root / "experiment_summary.csv", all_metrics)
+
     aggregate = _aggregate(all_metrics)
     _json_dump(output_root / "experiment_summary.json", aggregate)
+
+    quant_pretty = _build_quant_pretty(aggregate=aggregate, rows=all_metrics)
+    _json_dump(output_root / "quant_summary_human_readable.json", quant_pretty)
+    _text_dump(output_root / "quant_summary.md", _build_quant_summary_md(aggregate=aggregate, rows=all_metrics))
+    _text_dump(
+        output_root / "github_issue_collection.md",
+        _build_issue_collection_md(scenario_reports=scenario_reports, aggregate=aggregate),
+    )
 
     return {
         "metrics": all_metrics,
         "aggregate": aggregate,
+        "scenario_reports": scenario_reports,
     }

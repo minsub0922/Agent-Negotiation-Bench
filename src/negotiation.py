@@ -39,6 +39,7 @@ class LLMCalendarNegotiator(SAONegotiator):
         role_name: str,
         profile: dict[str, Any],
         rng: random.Random,
+        llm_max_new_tokens: int = 256,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -47,6 +48,7 @@ class LLMCalendarNegotiator(SAONegotiator):
         self.role_name = role_name
         self.profile = profile
         self.rng = rng
+        self.llm_max_new_tokens = llm_max_new_tokens
 
         self._ranked_outcomes: list[tuple[tuple[Any, ...], float]] = []
         self._offered: set[tuple[Any, ...]] = set()
@@ -130,7 +132,7 @@ class LLMCalendarNegotiator(SAONegotiator):
 
         utility = float(self.preferences(offer))
         prompt = self._compose_offer_prompt(state, offer, utility, threshold)
-        llm_result = self.llm.generate(prompt)
+        llm_result = self.llm.generate(prompt, max_new_tokens=self.llm_max_new_tokens)
 
         self.recorder.add(
             {
@@ -161,7 +163,7 @@ class LLMCalendarNegotiator(SAONegotiator):
         decision = ResponseType.ACCEPT_OFFER if utility >= threshold else ResponseType.REJECT_OFFER
 
         prompt = self._compose_response_prompt(state, offer, utility, threshold, decision)
-        llm_result = self.llm.generate(prompt)
+        llm_result = self.llm.generate(prompt, max_new_tokens=self.llm_max_new_tokens)
 
         self.recorder.add(
             {

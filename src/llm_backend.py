@@ -16,7 +16,7 @@ class LLMResult:
 class LLMBackend(Protocol):
     name: str
 
-    def generate(self, prompt: str, max_new_tokens: int = 96) -> LLMResult:
+    def generate(self, prompt: str, max_new_tokens: int = 256) -> LLMResult:
         ...
 
 
@@ -24,11 +24,14 @@ class DummyLLM:
     def __init__(self, name: str):
         self.name = name
 
-    def generate(self, prompt: str, max_new_tokens: int = 96) -> LLMResult:
-        style = "제안을 조정해보겠습니다." if "offer" in prompt.lower() else "조건을 재검토해볼게요."
-        short = re.sub(r"\s+", " ", prompt.strip())
-        short = short[-120:]
-        text = f"{self.name}: {style} ({short})"
+    def generate(self, prompt: str, max_new_tokens: int = 256) -> LLMResult:
+        normalized = re.sub(r"\s+", " ", prompt.strip())
+        if "결정: 수락" in normalized:
+            text = f"{self.name}: 제안을 수락합니다. 이 일정이 현재 조건에서 가장 균형이 좋습니다."
+        elif "결정: 거절" in normalized:
+            text = f"{self.name}: 아직 제약 조건이 맞지 않아 이번 제안은 조정이 필요합니다."
+        else:
+            text = f"{self.name}: 이 제안이 서로의 일정 충돌을 줄이는 현실적인 선택이라고 봅니다."
         return LLMResult(text=text, raw_text=text, prompt=prompt, backend="dummy")
 
 
@@ -73,12 +76,9 @@ class HFLocalLLM:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         if not lines:
             return ""
-        merged = " ".join(lines)
-        if len(merged) > 360:
-            merged = merged[:360].rstrip() + "..."
-        return merged
+        return " ".join(lines)
 
-    def generate(self, prompt: str, max_new_tokens: int = 96) -> LLMResult:
+    def generate(self, prompt: str, max_new_tokens: int = 256) -> LLMResult:
         out = self.generator(
             prompt,
             max_new_tokens=max_new_tokens,
