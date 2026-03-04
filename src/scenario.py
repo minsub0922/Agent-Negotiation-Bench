@@ -7,6 +7,8 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
+from .agent_utils import default_agent_names, scenario_agent_names
+
 SLOTS = ("morning", "afternoon", "evening")
 DESTINATION_POOL = (
     "Jeju",
@@ -165,18 +167,16 @@ def utility_of(profile: dict[str, Any], offer: dict[str, str]) -> float:
 
 
 def _has_feasible_outcome(scenario: dict[str, Any], min_gain: float = 0.03) -> bool:
-    agent_a = scenario["agents"]["agent_a"]
-    agent_b = scenario["agents"]["agent_b"]
-    rv_a = float(agent_a["reservation_value"])
-    rv_b = float(agent_b["reservation_value"])
+    agent_names = scenario_agent_names(scenario)
+    profiles = {name: scenario["agents"][name] for name in agent_names}
+    reservations = {name: float(profile["reservation_value"]) for name, profile in profiles.items()}
 
     best_joint = -1.0
     feasible_count = 0
     for offer in enumerate_outcomes(scenario):
-        ua = utility_of(agent_a, offer)
-        ub = utility_of(agent_b, offer)
-        best_joint = max(best_joint, ua + ub)
-        if ua >= rv_a + min_gain and ub >= rv_b + min_gain:
+        utilities = {name: utility_of(profile, offer) for name, profile in profiles.items()}
+        best_joint = max(best_joint, sum(utilities.values()))
+        if all(utilities[name] >= reservations[name] + min_gain for name in agent_names):
             feasible_count += 1
 
     return feasible_count > 0 and best_joint > 0
@@ -185,11 +185,13 @@ def _has_feasible_outcome(scenario: dict[str, Any], min_gain: float = 0.03) -> b
 def generate_scenario(
     rng: random.Random,
     scenario_index: int,
+    n_agents: int = 2,
     horizon_days: int = 14,
     min_windows: int = 14,
     max_windows: int = 22,
     n_destinations: int = 5,
 ) -> dict[str, Any]:
+    agent_names = default_agent_names(n_agents)
     destinations = sorted(rng.sample(list(DESTINATION_POOL), k=n_destinations))
     travel_windows_meta = _build_window_options(
         rng=rng,
@@ -208,10 +210,11 @@ def generate_scenario(
         "travel_windows": travel_windows,
         "travel_window_meta": travel_windows_meta,
         "budgets": budgets,
+        "agent_order": agent_names,
         "agents": {},
     }
 
-    for agent_name in ("agent_a", "agent_b"):
+    for agent_name in agent_names:
         calendar = _sample_calendar(rng, horizon_days=horizon_days)
         destination_scores, window_scores, budget_scores, weights = _profile_scores(
             rng=rng,
@@ -237,6 +240,7 @@ def generate_scenario(
 
 def generate_dataset(
     num_scenarios: int,
+    n_agents: int = 2,
     seed: int = 7,
     horizon_days: int = 14,
     max_generation_attempts: int = 40,
@@ -250,6 +254,7 @@ def generate_dataset(
             candidate = generate_scenario(
                 rng=rng,
                 scenario_index=idx,
+                n_agents=n_agents,
                 horizon_days=horizon_days,
             )
             if _has_feasible_outcome(candidate):
@@ -260,6 +265,7 @@ def generate_dataset(
             selected = generate_scenario(
                 rng=rng,
                 scenario_index=idx,
+                n_agents=n_agents,
                 horizon_days=horizon_days,
             )
 

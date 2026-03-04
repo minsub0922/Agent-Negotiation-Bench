@@ -3,6 +3,7 @@ from __future__ import annotations
 from itertools import product
 from typing import Any
 
+from .agent_utils import scenario_agent_names
 from .negotiation import ISSUE_NAMES, offer_tuple_to_dict
 
 
@@ -33,20 +34,29 @@ def _all_outcome_tuples(scenario: dict[str, Any]) -> list[tuple[str, str, str]]:
     )
 
 
-def _is_dominated(point: tuple[float, float], candidates: list[tuple[float, float]]) -> bool:
+def _is_dominated(
+    point: dict[str, float],
+    candidates: list[dict[str, float]],
+    agent_names: list[str],
+) -> bool:
     for other in candidates:
-        if other[0] >= point[0] and other[1] >= point[1] and (other[0] > point[0] or other[1] > point[1]):
+        if all(other[name] >= point[name] for name in agent_names) and any(
+            other[name] > point[name] for name in agent_names
+        ):
             return True
     return False
 
 
-def _pareto_frontier(points: dict[tuple[str, str, str], tuple[float, float]]) -> set[tuple[str, str, str]]:
+def _pareto_frontier(
+    points: dict[tuple[str, str, str], dict[str, float]],
+    agent_names: list[str],
+) -> set[tuple[str, str, str]]:
     frontier: set[tuple[str, str, str]] = set()
     utility_points = list(points.items())
     just_values = [v for _, v in utility_points]
 
     for outcome, point in utility_points:
-        if not _is_dominated(point, just_values):
+        if not _is_dominated(point, just_values, agent_names):
             frontier.add(outcome)
     return frontier
 
@@ -59,52 +69,83 @@ def _calendar_conflict_ratio(profile: dict[str, Any], itinerary: dict[str, Any],
     return busy_slots / total
 
 
+def _nash_product(utilities: dict[str, float], reservations: dict[str, float], agent_names: list[str]) -> float:
+    value = 1.0
+    for name in agent_names:
+        value *= max(utilities[name] - reservations[name], 0.0)
+    return value
+
+
+def _append_agent_metric_aliases(
+    payload: dict[str, Any],
+    prefix: str,
+    by_agent: dict[str, Any],
+    agent_names: list[str],
+) -> None:
+    for name in agent_names:
+        payload[f"{prefix}_{name}"] = by_agent[name]
+
+    # Backward compatibility for strict 2-agent readers.
+    payload.setdefault(f"{prefix}_agent_a", by_agent.get("agent_a"))
+    payload.setdefault(f"{prefix}_agent_b", by_agent.get("agent_b"))
+
+
 def compute_metrics(
     scenario: dict[str, Any],
     state,
     agreement_tuple: tuple[str, str, str] | None,
-    ufun_a,
-    ufun_b,
+    ufuns_by_agent: dict[str, Any],
     events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    rv_a = float(scenario["agents"]["agent_a"]["reservation_value"])
-    rv_b = float(scenario["agents"]["agent_b"]["reservation_value"])
+    agent_names = scenario_agent_names(scenario)
+    profiles = {name: scenario["agents"][name] for name in agent_names}
+    reservations = {name: float(profiles[name]["reservation_value"]) for name in agent_names}
 
     outcomes = _all_outcome_tuples(scenario)
-    utility_map: dict[tuple[str, str, str], tuple[float, float]] = {}
+    utility_map: dict[tuple[str, str, str], dict[str, float]] = {}
     for outcome in outcomes:
-        utility_map[outcome] = (float(ufun_a(outcome)), float(ufun_b(outcome)))
+        utility_map[outcome] = {name: float(ufuns_by_agent[name](outcome)) for name in agent_names}
 
-    pareto = _pareto_frontier(utility_map)
-    best_welfare = max(ua + ub for ua, ub in utility_map.values())
-    best_nash = max(max(ua - rv_a, 0.0) * max(ub - rv_b, 0.0) for ua, ub in utility_map.values())
+    pareto = _pareto_frontier(utility_map, agent_names=agent_names)
+    best_welfare = max(sum(v.values()) for v in utility_map.values())
+    best_nash = max(_nash_product(v, reservations, agent_names) for v in utility_map.values())
 
     agreement_offer = offer_tuple_to_dict(agreement_tuple)
     itinerary = agreement_to_itinerary(agreement_offer, scenario) if agreement_offer else None
 
     if agreement_tuple is not None:
-        ua = float(ufun_a(agreement_tuple))
-        ub = float(ufun_b(agreement_tuple))
-        welfare = ua + ub
-        nash = max(ua - rv_a, 0.0) * max(ub - rv_b, 0.0)
-        fairness_gap = abs(ua - ub)
+        utilities = utility_map.get(agreement_tuple) or {
+            name: float(ufuns_by_agent[name](agreement_tuple)) for name in agent_names
+        }
+        welfare = sum(utilities.values())
+        nash = _nash_product(utilities, reservations, agent_names)
+        fairness_gap = max(utilities.values()) - min(utilities.values()) if utilities else None
         pareto_optimal = agreement_tuple in pareto
-        cal_conflict_a = _calendar_conflict_ratio(scenario["agents"]["agent_a"], itinerary, scenario["slot_names"])
-        cal_conflict_b = _calendar_conflict_ratio(scenario["agents"]["agent_b"], itinerary, scenario["slot_names"])
+        calendar_conflicts = {
+            name: _calendar_conflict_ratio(profiles[name], itinerary, scenario["slot_names"])
+            for name in agent_names
+        }
     else:
-        ua = 0.0
-        ub = 0.0
+        utilities = {name: 0.0 for name in agent_names}
         welfare = 0.0
         nash = 0.0
         fairness_gap = None
         pareto_optimal = False
-        cal_conflict_a = None
-        cal_conflict_b = None
+        calendar_conflicts = {name: None for name in agent_names}
 
     accepted_events = [e for e in events if e["kind"] == "response" and e["decision"] == "ACCEPT_OFFER"]
 
-    return {
+    utility_by_agent = {name: round(float(utilities[name]), 6) for name in agent_names}
+    reservation_by_agent = {name: round(float(reservations[name]), 6) for name in agent_names}
+    conflict_by_agent = {
+        name: (round(float(calendar_conflicts[name]), 6) if calendar_conflicts[name] is not None else None)
+        for name in agent_names
+    }
+
+    metrics = {
         "scenario_id": scenario["scenario_id"],
+        "num_agents": len(agent_names),
+        "agent_names": agent_names,
         "agreement_reached": agreement_tuple is not None,
         "agreement_offer": agreement_offer,
         "agreement_itinerary": itinerary,
@@ -112,36 +153,41 @@ def compute_metrics(
         "relative_time_end": float(state.relative_time),
         "timed_out": bool(state.timedout),
         "broken": bool(state.broken),
-        "utility_agent_a": round(ua, 6),
-        "utility_agent_b": round(ub, 6),
-        "reservation_agent_a": round(rv_a, 6),
-        "reservation_agent_b": round(rv_b, 6),
-        "social_welfare": round(welfare, 6),
-        "welfare_ratio_vs_best": round(welfare / best_welfare, 6) if best_welfare > 0 else 0.0,
-        "nash_product": round(nash, 6),
-        "nash_ratio_vs_best": round(nash / best_nash, 6) if best_nash > 0 else 0.0,
+        "utility_by_agent": utility_by_agent,
+        "reservation_by_agent": reservation_by_agent,
+        "calendar_conflict_ratio_by_agent": conflict_by_agent,
+        "social_welfare": round(float(welfare), 6),
+        "welfare_ratio_vs_best": round(float(welfare / best_welfare), 6) if best_welfare > 0 else 0.0,
+        "nash_product": round(float(nash), 6),
+        "nash_ratio_vs_best": round(float(nash / best_nash), 6) if best_nash > 0 else 0.0,
         "pareto_optimal": pareto_optimal,
-        "fairness_gap": round(fairness_gap, 6) if fairness_gap is not None else None,
-        "calendar_conflict_ratio_agent_a": round(cal_conflict_a, 6) if cal_conflict_a is not None else None,
-        "calendar_conflict_ratio_agent_b": round(cal_conflict_b, 6) if cal_conflict_b is not None else None,
+        "fairness_gap": round(float(fairness_gap), 6) if fairness_gap is not None else None,
         "event_count": len(events),
         "offer_count": sum(1 for e in events if e["kind"] == "offer"),
         "response_count": sum(1 for e in events if e["kind"] == "response"),
         "accept_count": len(accepted_events),
     }
 
+    _append_agent_metric_aliases(metrics, "utility", utility_by_agent, agent_names=agent_names)
+    _append_agent_metric_aliases(metrics, "reservation", reservation_by_agent, agent_names=agent_names)
+    _append_agent_metric_aliases(metrics, "calendar_conflict_ratio", conflict_by_agent, agent_names=agent_names)
+
+    return metrics
+
 
 def enrich_event_for_human(
     event: dict[str, Any],
     scenario: dict[str, Any],
-    ufun_a,
-    ufun_b,
+    ufuns_by_agent: dict[str, Any],
 ) -> dict[str, Any]:
     copied = dict(event)
     offer_tuple = tuple(event["offer_tuple"])
+    agent_names = scenario_agent_names(scenario)
 
-    copied["utility_agent_a"] = round(float(ufun_a(offer_tuple)), 6)
-    copied["utility_agent_b"] = round(float(ufun_b(offer_tuple)), 6)
+    utility_by_agent = {name: round(float(ufuns_by_agent[name](offer_tuple)), 6) for name in agent_names}
+    copied["utility_by_agent"] = utility_by_agent
+
+    _append_agent_metric_aliases(copied, "utility", utility_by_agent, agent_names=agent_names)
 
     offer_dict = dict(event["offer"])
     copied["itinerary"] = agreement_to_itinerary(offer_dict, scenario)

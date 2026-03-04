@@ -1,9 +1,9 @@
-# negmas 기반 2-Agent 여행 일정 협상 프로젝트
+# negmas 기반 N-Agent 여행 일정 협상 프로젝트
 
 이 프로젝트는 `negmas`를 사용해, 각 에이전트의 캘린더 일정과 선호를 바탕으로 여행 일정을 협상하는 실험 파이프라인입니다.
 
 - 랜덤 시나리오 데이터셋 생성
-- 로컬 LLM 2개(각 agent 별 모델 경로 가능)로 협상 발화 생성
+- 로컬 LLM N개(각 agent 별 모델 경로 가능)로 협상 발화 생성
 - 협상 상세 로그(JSONL) + 사람이 읽기 쉬운 대화 JSON 저장
 - 채팅 내역처럼 메시지만 보는 human-only transcript 저장
 - 정량 평가 지표 저장 + 보기 쉬운 요약 MD/JSON 생성
@@ -21,6 +21,7 @@ pip install -r requirements.txt
 ```bash
 python -m src.main generate-dataset \
   --num-scenarios 30 \
+  --num-agents 3 \
   --seed 42 \
   --horizon-days 14 \
   --dataset-id ds_paper_v1 \
@@ -29,7 +30,7 @@ python -m src.main generate-dataset \
 
 ## 3) 협상 실행 (기존 데이터셋 사용)
 
-### 3-1. 로컬 HF 모델 2개 사용
+### 3-1. 로컬 HF 모델 사용 (agent별 모델 경로 지정)
 
 ```bash
 python -m src.main run \
@@ -41,14 +42,13 @@ python -m src.main run \
   --torch-dtype bfloat16 \
   --decision-policy llm-hybrid \
   --require-explicit-accept \
-  --agent-a-model-path /absolute/path/to/model_a \
-  --agent-b-model-path /absolute/path/to/model_b \
+  --agent-model-paths agent_a=/absolute/path/to/model_a,agent_b=/absolute/path/to/model_b,agent_c=/absolute/path/to/model_c \
   --llm-max-new-tokens 256 \
   --max-steps 40 \
   --output-dir outputs
 ```
 
-### 3-2. 하나의 모델 경로를 두 agent에 공통 적용
+### 3-2. 하나의 모델 경로를 모든 agent에 공통 적용
 
 ```bash
 python -m src.main run \
@@ -82,6 +82,7 @@ python -m src.main run \
 ```bash
 python -m src.main full \
   --num-scenarios 20 \
+  --num-agents 3 \
   --seed 7 \
   --dataset-id ds_full_v1 \
   --run-id run_full_baseline \
@@ -122,12 +123,14 @@ python -m src.main full \
 ## 주요 정량지표
 
 - `agreement_reached`: 합의 여부
-- `utility_agent_a`, `utility_agent_b`: 최종 합의안에서 각 agent 효용
-- `social_welfare`: 두 agent 효용 합
-- `nash_product`: `(u_a-r_a)*(u_b-r_b)` 기반 Nash product
+- `utility_by_agent`: 최종 합의안에서 agent별 효용
+- `reservation_by_agent`: agent별 reservation value
+- `calendar_conflict_ratio_by_agent`: agent별 캘린더 충돌 비율
+- `social_welfare`: 모든 agent 효용 합
+- `nash_product`: 모든 agent에 대해 `Π max(u_i-r_i, 0)` 기반 Nash product
 - `pareto_optimal`: 최종 합의안의 파레토 최적 여부
 - `welfare_ratio_vs_best`, `nash_ratio_vs_best`: 전체 outcome space 최적 대비 비율
-- `calendar_conflict_ratio_agent_a/b`: 합의된 여행일과 각자 캘린더 충돌 비율
+- 하위호환 키(`utility_agent_a`, `utility_agent_b` 등)도 함께 저장됨
 
 정량 지표 해설은 `docs/QUANT_METRICS_GUIDE.md` 를 참고하세요.
 
@@ -139,13 +142,11 @@ python -m src.main full \
 - `run`/`full` 실행 시 자동 생성되는 `run_id`에는 모델 시그니처 + dataset id가 포함됩니다(원하면 `--run-id`로 직접 지정 가능).
 - 데이터셋 생성 시 `<dataset>.config.json` 파일이 함께 저장되며, `dataset_id`/hash/seed 등을 기록합니다.
 - `--num-gpus`를 지정하면 agent 배치는 자동으로 결정됩니다.
-  - `--num-gpus 0`: 두 agent 모두 CPU
-  - `--num-gpus 1`: 두 agent 모두 `cuda:0`
-  - `--num-gpus 2` 이상:
-    - 동일 모델 경로(`--model-path` 공유): 모델 1개를 `auto`로 샤딩해 두 agent가 공유
-    - 서로 다른 모델 경로: `agent_a -> cuda:0`, `agent_b -> cuda:1`
+  - `--num-gpus 0`: 모든 agent CPU
+  - `--num-gpus 1`: 모든 agent `cuda:0`
+  - `--num-gpus >= 2`: `agent_i -> cuda:(i % num_gpus)` 라운드로빈 배치
+  - 모든 agent가 동일 모델 경로(`--model-path` 또는 동일한 `--agent-model-paths`)를 쓰면, 모델 인스턴스를 공유해 메모리를 절약합니다.
 - 실제 배치 결과는 실행 로그의 `[PLACEMENT] ...`와 `run_config.json > agent_placement`에 저장됩니다.
-- 동일 모델 경로 + 동일 GPU 배치(예: `--num-gpus 1` + `--model-path ...`)이면 모델 인스턴스를 자동으로 공유해서 로딩 시간과 VRAM 사용량을 줄입니다.
 - 14B 모델에서 속도가 느리면 `--llm-max-new-tokens 64` 또는 `96`으로 낮춰 먼저 점검하세요.
 - OOM이 나면 `--torch-dtype bfloat16`(H100 권장), `--llm-max-new-tokens 64`, `--max-steps 20`으로 먼저 안정화하세요.
 - `--decision-policy` 기본값은 `llm-hybrid`이며, 모델 출력이 제안 선택/수락 결정에 반영됩니다.

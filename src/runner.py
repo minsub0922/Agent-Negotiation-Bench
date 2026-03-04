@@ -10,6 +10,7 @@ from typing import Any
 
 from negmas import LinearAdditiveUtilityFunction, SAOMechanism, make_issue
 
+from .agent_utils import scenario_agent_names
 from .evaluation import compute_metrics, enrich_event_for_human
 from .llm_backend import LLMBackend
 from .negotiation import ISSUE_NAMES, EventRecorder, LLMCalendarNegotiator
@@ -51,13 +52,13 @@ def _build_ufun(profile: dict[str, Any], issues: list[Any]) -> LinearAdditiveUti
     return ufun
 
 
-def _trace_to_json(trace, scenario: dict[str, Any], ufun_a, ufun_b) -> dict[str, Any]:
+def _trace_to_json(trace, scenario: dict[str, Any], ufuns_by_agent: dict[str, Any]) -> dict[str, Any]:
+    agent_names = scenario_agent_names(scenario)
     offer_tuple = trace.offer
     if offer_tuple is None:
         offer = None
         itinerary = None
-        ua = None
-        ub = None
+        utility_by_agent = {name: None for name in agent_names}
     else:
         offer = {
             ISSUE_NAMES[0]: offer_tuple[0],
@@ -73,15 +74,17 @@ def _trace_to_json(trace, scenario: dict[str, Any], ufun_a, ufun_b) -> dict[str,
             "duration_days": window["duration_days"],
             "travel_days": window["travel_days"],
         }
-        ua = round(float(ufun_a(offer_tuple)), 6)
-        ub = round(float(ufun_b(offer_tuple)), 6)
+        utility_by_agent = {
+            name: round(float(ufuns_by_agent[name](offer_tuple)), 6)
+            for name in agent_names
+        }
 
     responses = {
         k: (v.name if hasattr(v, "name") else str(v))
         for k, v in (trace.responses.items() if trace.responses else [])
     }
 
-    return {
+    payload = {
         "time": float(trace.time),
         "relative_time": float(trace.relative_time),
         "step": int(trace.step),
@@ -89,11 +92,13 @@ def _trace_to_json(trace, scenario: dict[str, Any], ufun_a, ufun_b) -> dict[str,
         "offer_tuple": list(offer_tuple) if offer_tuple is not None else None,
         "offer": offer,
         "itinerary": itinerary,
-        "utility_agent_a": ua,
-        "utility_agent_b": ub,
+        "utility_by_agent": utility_by_agent,
         "responses": responses,
         "state": trace.state,
     }
+    payload["utility_agent_a"] = utility_by_agent.get("agent_a")
+    payload["utility_agent_b"] = utility_by_agent.get("agent_b")
+    return payload
 
 
 def _to_chat_only_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -149,27 +154,64 @@ def _fmt_bool(value: bool) -> str:
     return "Yes" if bool(value) else "No"
 
 
+def _metric_by_agent(metrics: dict[str, Any], field: str) -> dict[str, Any]:
+    data = metrics.get(field)
+    if isinstance(data, dict) and data:
+        return data
+
+    # Backward-compatible fallback for legacy metrics.
+    prefix = field.replace("_by_agent", "")
+    fallback: dict[str, Any] = {}
+    for legacy in ("agent_a", "agent_b"):
+        key = f"{prefix}_{legacy}"
+        if key in metrics:
+            fallback[legacy] = metrics.get(key)
+    return fallback
+
+
+def _agent_rows(
+    metrics: dict[str, Any],
+    field: str,
+    row_name_prefix: str,
+    formatter,
+) -> list[str]:
+    by_agent = _metric_by_agent(metrics, field)
+    if not by_agent:
+        return []
+
+    agent_names = metrics.get("agent_names")
+    if not isinstance(agent_names, list) or not agent_names:
+        agent_names = list(by_agent.keys())
+
+    rows: list[str] = []
+    for name in agent_names:
+        if name not in by_agent:
+            continue
+        rows.append(f"| {row_name_prefix} ({name}) | {formatter(by_agent.get(name))} |")
+    return rows
+
+
 def _scenario_metrics_md(scenario_id: str, metrics: dict[str, Any]) -> str:
     lines = [
         f"# Scenario Quant Summary: {scenario_id}",
         "",
         f"- Agreement: {_fmt_bool(metrics['agreement_reached'])}",
         f"- Pareto Optimal: {_fmt_bool(metrics['pareto_optimal'])}",
+        f"- Num Agents: {metrics.get('num_agents', '-')}",
         f"- Result: {_itinerary_summary(metrics)}",
         "",
         "| Metric | Value |",
         "|---|---|",
         f"| Negotiation Steps | {_fmt_num(metrics['negotiation_steps'], 0)} |",
-        f"| Utility Agent A | {_fmt_num(metrics['utility_agent_a'])} |",
-        f"| Utility Agent B | {_fmt_num(metrics['utility_agent_b'])} |",
         f"| Social Welfare | {_fmt_num(metrics['social_welfare'])} |",
         f"| Nash Product | {_fmt_num(metrics['nash_product'])} |",
         f"| Welfare Ratio vs Best | {_fmt_pct(metrics['welfare_ratio_vs_best'])} |",
         f"| Nash Ratio vs Best | {_fmt_pct(metrics['nash_ratio_vs_best'])} |",
         f"| Fairness Gap | {_fmt_num(metrics['fairness_gap'])} |",
-        f"| Calendar Conflict A | {_fmt_pct(metrics['calendar_conflict_ratio_agent_a'])} |",
-        f"| Calendar Conflict B | {_fmt_pct(metrics['calendar_conflict_ratio_agent_b'])} |",
     ]
+    lines.extend(_agent_rows(metrics, "utility_by_agent", "Utility", _fmt_num))
+    lines.extend(_agent_rows(metrics, "reservation_by_agent", "Reservation", _fmt_num))
+    lines.extend(_agent_rows(metrics, "calendar_conflict_ratio_by_agent", "Calendar Conflict", _fmt_pct))
     return "\n".join(lines) + "\n"
 
 
@@ -266,15 +308,19 @@ def _build_issue_md(issue_bundle: dict[str, Any]) -> str:
             "",
             "| Metric | Value |",
             "|---|---|",
-            f"| Utility Agent A | {_fmt_num(metrics['utility_agent_a'])} |",
-            f"| Utility Agent B | {_fmt_num(metrics['utility_agent_b'])} |",
+            f"| Num Agents | {_fmt_num(metrics.get('num_agents'), 0)} |",
             f"| Social Welfare | {_fmt_num(metrics['social_welfare'])} |",
             f"| Nash Product | {_fmt_num(metrics['nash_product'])} |",
             f"| Welfare Ratio vs Best | {_fmt_pct(metrics['welfare_ratio_vs_best'])} |",
             f"| Nash Ratio vs Best | {_fmt_pct(metrics['nash_ratio_vs_best'])} |",
             f"| Fairness Gap | {_fmt_num(metrics['fairness_gap'])} |",
-            f"| Calendar Conflict A | {_fmt_pct(metrics['calendar_conflict_ratio_agent_a'])} |",
-            f"| Calendar Conflict B | {_fmt_pct(metrics['calendar_conflict_ratio_agent_b'])} |",
+        ]
+    )
+    lines.extend(_agent_rows(metrics, "utility_by_agent", "Utility", _fmt_num))
+    lines.extend(_agent_rows(metrics, "reservation_by_agent", "Reservation", _fmt_num))
+    lines.extend(_agent_rows(metrics, "calendar_conflict_ratio_by_agent", "Calendar Conflict", _fmt_pct))
+    lines.extend(
+        [
             "",
             "## Detailed JSON",
             "",
@@ -378,8 +424,7 @@ def _build_issue_collection_md(
 
 def run_single_scenario(
     scenario: dict[str, Any],
-    llm_a: LLMBackend,
-    llm_b: LLMBackend,
+    llms_by_agent: dict[str, LLMBackend],
     output_dir: Path,
     max_steps: int,
     seed: int,
@@ -387,47 +432,38 @@ def run_single_scenario(
     decision_policy: str,
     require_explicit_accept: bool,
 ) -> dict[str, Any]:
+    agent_names = scenario_agent_names(scenario)
+    missing_llms = [name for name in agent_names if name not in llms_by_agent]
+    if missing_llms:
+        raise ValueError(f"Missing llm backend for agents: {missing_llms}")
+
     issues = [
         make_issue(scenario["destinations"], name="destination"),
         make_issue(scenario["travel_windows"], name="travel_window"),
         make_issue(scenario["budgets"], name="budget"),
     ]
 
-    profile_a = scenario["agents"]["agent_a"]
-    profile_b = scenario["agents"]["agent_b"]
-
-    ufun_a = _build_ufun(profile_a, issues)
-    ufun_b = _build_ufun(profile_b, issues)
+    ufuns_by_agent = {
+        name: _build_ufun(scenario["agents"][name], issues)
+        for name in agent_names
+    }
 
     recorder = EventRecorder()
-    rng = random.Random(seed)
-
-    neg_a = LLMCalendarNegotiator(
-        llm=llm_a,
-        recorder=recorder,
-        role_name="agent_a",
-        profile=profile_a,
-        rng=rng,
-        llm_max_new_tokens=llm_max_new_tokens,
-        decision_policy=decision_policy,
-        require_explicit_accept=require_explicit_accept,
-        name="agent_a",
-    )
-    neg_b = LLMCalendarNegotiator(
-        llm=llm_b,
-        recorder=recorder,
-        role_name="agent_b",
-        profile=profile_b,
-        rng=rng,
-        llm_max_new_tokens=llm_max_new_tokens,
-        decision_policy=decision_policy,
-        require_explicit_accept=require_explicit_accept,
-        name="agent_b",
-    )
 
     mechanism = SAOMechanism(issues=issues, n_steps=max_steps)
-    mechanism.add(neg_a, preferences=ufun_a)
-    mechanism.add(neg_b, preferences=ufun_b)
+    for idx, name in enumerate(agent_names):
+        negotiator = LLMCalendarNegotiator(
+            llm=llms_by_agent[name],
+            recorder=recorder,
+            role_name=name,
+            profile=scenario["agents"][name],
+            rng=random.Random(seed + idx * 1009),
+            llm_max_new_tokens=llm_max_new_tokens,
+            decision_policy=decision_policy,
+            require_explicit_accept=require_explicit_accept,
+            name=name,
+        )
+        mechanism.add(negotiator, preferences=ufuns_by_agent[name])
 
     state = mechanism.run()
     agreement_tuple = state.agreement if state.agreement else None
@@ -435,13 +471,16 @@ def run_single_scenario(
     scenario_out = output_dir / scenario["scenario_id"]
     scenario_out.mkdir(parents=True, exist_ok=True)
 
-    trace_rows = [_trace_to_json(t, scenario=scenario, ufun_a=ufun_a, ufun_b=ufun_b) for t in mechanism.full_trace]
+    trace_rows = [
+        _trace_to_json(t, scenario=scenario, ufuns_by_agent=ufuns_by_agent)
+        for t in mechanism.full_trace
+    ]
     _jsonl_dump(scenario_out / "negmas_trace.jsonl", trace_rows)
 
     _jsonl_dump(scenario_out / "agent_event_log.jsonl", recorder.events)
 
     human_dialogue = [
-        enrich_event_for_human(event, scenario=scenario, ufun_a=ufun_a, ufun_b=ufun_b)
+        enrich_event_for_human(event, scenario=scenario, ufuns_by_agent=ufuns_by_agent)
         for event in recorder.events
     ]
 
@@ -449,8 +488,7 @@ def run_single_scenario(
         scenario=scenario,
         state=state,
         agreement_tuple=agreement_tuple,
-        ufun_a=ufun_a,
-        ufun_b=ufun_b,
+        ufuns_by_agent=ufuns_by_agent,
         events=recorder.events,
     )
 
@@ -531,9 +569,26 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             return None
         return sum(clean) / len(clean)
 
-    return {
+    all_agent_names: list[str] = []
+    for row in rows:
+        for name in row.get("agent_names", []):
+            if name not in all_agent_names:
+                all_agent_names.append(name)
+
+    avg_utility_by_agent: dict[str, float | None] = {}
+    avg_calendar_conflict_by_agent: dict[str, float | None] = {}
+    for name in all_agent_names:
+        avg_utility_by_agent[name] = _avg_non_null(
+            [_metric_by_agent(r, "utility_by_agent").get(name) for r in rows]
+        )
+        avg_calendar_conflict_by_agent[name] = _avg_non_null(
+            [_metric_by_agent(r, "calendar_conflict_ratio_by_agent").get(name) for r in rows]
+        )
+
+    aggregate = {
         "run_at": datetime.now().isoformat(),
         "num_scenarios": len(rows),
+        "num_agents": max(len(r.get("agent_names", [])) for r in rows),
         "agreement_rate": len(reached) / len(rows),
         "pareto_rate": sum(1 for row in rows if row.get("pareto_optimal")) / len(rows),
         "avg_social_welfare": _avg([float(r["social_welfare"]) for r in rows]),
@@ -541,16 +596,23 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_steps": _avg([float(r["negotiation_steps"]) for r in rows]),
         "avg_welfare_ratio_vs_best": _avg([float(r["welfare_ratio_vs_best"]) for r in rows]),
         "avg_nash_ratio_vs_best": _avg([float(r["nash_ratio_vs_best"]) for r in rows]),
-        "avg_utility_agent_a": _avg([float(r["utility_agent_a"]) for r in rows]),
-        "avg_utility_agent_b": _avg([float(r["utility_agent_b"]) for r in rows]),
-        "avg_calendar_conflict_agent_a": _avg_non_null([r.get("calendar_conflict_ratio_agent_a") for r in rows]),
-        "avg_calendar_conflict_agent_b": _avg_non_null([r.get("calendar_conflict_ratio_agent_b") for r in rows]),
+        "agent_names": all_agent_names,
+        "avg_utility_by_agent": avg_utility_by_agent,
+        "avg_calendar_conflict_by_agent": avg_calendar_conflict_by_agent,
     }
+    aggregate["avg_utility_agent_a"] = avg_utility_by_agent.get("agent_a")
+    aggregate["avg_utility_agent_b"] = avg_utility_by_agent.get("agent_b")
+    aggregate["avg_calendar_conflict_agent_a"] = avg_calendar_conflict_by_agent.get("agent_a")
+    aggregate["avg_calendar_conflict_agent_b"] = avg_calendar_conflict_by_agent.get("agent_b")
+    return aggregate
 
 
 def _build_quant_pretty(aggregate: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    avg_utility_map = aggregate.get("avg_utility_by_agent", {})
+    avg_conflict_map = aggregate.get("avg_calendar_conflict_by_agent", {})
     overview = {
         "num_scenarios": aggregate.get("num_scenarios"),
+        "num_agents": aggregate.get("num_agents"),
         "agreement_rate": _fmt_pct(aggregate.get("agreement_rate")),
         "pareto_rate": _fmt_pct(aggregate.get("pareto_rate")),
         "avg_steps": _fmt_num(aggregate.get("avg_steps"), 2),
@@ -558,20 +620,23 @@ def _build_quant_pretty(aggregate: dict[str, Any], rows: list[dict[str, Any]]) -
         "avg_nash_product": _fmt_num(aggregate.get("avg_nash_product"), 4),
         "avg_welfare_ratio_vs_best": _fmt_pct(aggregate.get("avg_welfare_ratio_vs_best")),
         "avg_nash_ratio_vs_best": _fmt_pct(aggregate.get("avg_nash_ratio_vs_best")),
-        "avg_calendar_conflict_agent_a": _fmt_pct(aggregate.get("avg_calendar_conflict_agent_a")),
-        "avg_calendar_conflict_agent_b": _fmt_pct(aggregate.get("avg_calendar_conflict_agent_b")),
+        "avg_utility_by_agent": {k: _fmt_num(v) for k, v in avg_utility_map.items()},
+        "avg_calendar_conflict_by_agent": {k: _fmt_pct(v) for k, v in avg_conflict_map.items()},
     }
 
     scenarios = []
     for row in rows:
+        utility_by_agent = _metric_by_agent(row, "utility_by_agent")
+        conflict_by_agent = _metric_by_agent(row, "calendar_conflict_ratio_by_agent")
         scenarios.append(
             {
                 "scenario_id": row.get("scenario_id"),
+                "num_agents": row.get("num_agents"),
                 "agreement": _fmt_bool(bool(row.get("agreement_reached"))),
                 "pareto": _fmt_bool(bool(row.get("pareto_optimal"))),
                 "steps": _fmt_num(row.get("negotiation_steps"), 0),
-                "utility_agent_a": _fmt_num(row.get("utility_agent_a")),
-                "utility_agent_b": _fmt_num(row.get("utility_agent_b")),
+                "utility_by_agent": {k: _fmt_num(v) for k, v in utility_by_agent.items()},
+                "calendar_conflict_ratio_by_agent": {k: _fmt_pct(v) for k, v in conflict_by_agent.items()},
                 "social_welfare": _fmt_num(row.get("social_welfare")),
                 "nash_product": _fmt_num(row.get("nash_product")),
                 "welfare_ratio_vs_best": _fmt_pct(row.get("welfare_ratio_vs_best")),
@@ -586,6 +651,16 @@ def _build_quant_pretty(aggregate: dict[str, Any], rows: list[dict[str, Any]]) -
 
 
 def _build_quant_summary_md(aggregate: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    def _agent_compact_text(row: dict[str, Any], field: str, formatter) -> str:
+        by_agent = _metric_by_agent(row, field)
+        if not by_agent:
+            return "-"
+        names = row.get("agent_names")
+        if not isinstance(names, list) or not names:
+            names = list(by_agent.keys())
+        parts = [f"{name}:{formatter(by_agent.get(name))}" for name in names if name in by_agent]
+        return ", ".join(parts) if parts else "-"
+
     lines = [
         "# Quantitative Summary",
         "",
@@ -594,6 +669,7 @@ def _build_quant_summary_md(aggregate: dict[str, Any], rows: list[dict[str, Any]
         "| Metric | Value |",
         "|---|---|",
         f"| Num Scenarios | {aggregate.get('num_scenarios', '-')} |",
+        f"| Num Agents | {aggregate.get('num_agents', '-')} |",
         f"| Agreement Rate | {_fmt_pct(aggregate.get('agreement_rate'))} |",
         f"| Pareto Rate | {_fmt_pct(aggregate.get('pareto_rate'))} |",
         f"| Avg Steps | {_fmt_num(aggregate.get('avg_steps'), 2)} |",
@@ -601,28 +677,32 @@ def _build_quant_summary_md(aggregate: dict[str, Any], rows: list[dict[str, Any]
         f"| Avg Nash Product | {_fmt_num(aggregate.get('avg_nash_product'))} |",
         f"| Avg Welfare Ratio vs Best | {_fmt_pct(aggregate.get('avg_welfare_ratio_vs_best'))} |",
         f"| Avg Nash Ratio vs Best | {_fmt_pct(aggregate.get('avg_nash_ratio_vs_best'))} |",
-        f"| Avg Calendar Conflict A | {_fmt_pct(aggregate.get('avg_calendar_conflict_agent_a'))} |",
-        f"| Avg Calendar Conflict B | {_fmt_pct(aggregate.get('avg_calendar_conflict_agent_b'))} |",
-        "",
-        "## Scenario Table",
-        "",
-        "| Scenario | Agree | Pareto | Steps | u_A | u_B | Welfare | Nash | Welfare/Best | Nash/Best |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
+
+    for name, value in (aggregate.get("avg_utility_by_agent") or {}).items():
+        lines.append(f"| Avg Utility ({name}) | {_fmt_num(value)} |")
+    for name, value in (aggregate.get("avg_calendar_conflict_by_agent") or {}).items():
+        lines.append(f"| Avg Calendar Conflict ({name}) | {_fmt_pct(value)} |")
+
+    lines.append("")
+    lines.append("## Scenario Table")
+    lines.append("")
+    lines.append("| Scenario | Agree | Pareto | Steps | Utilities | Welfare | Nash | Welfare/Best | Nash/Best | Conflicts |")
+    lines.append("|---|---|---|---:|---|---:|---:|---:|---:|---|")
 
     for row in rows:
         lines.append(
-            "| {sid} | {agr} | {par} | {st} | {ua} | {ub} | {sw} | {np} | {wr} | {nr} |".format(
+            "| {sid} | {agr} | {par} | {st} | {us} | {sw} | {np} | {wr} | {nr} | {cf} |".format(
                 sid=row.get("scenario_id", "-"),
                 agr=_fmt_bool(bool(row.get("agreement_reached"))),
                 par=_fmt_bool(bool(row.get("pareto_optimal"))),
                 st=_fmt_num(row.get("negotiation_steps"), 0),
-                ua=_fmt_num(row.get("utility_agent_a")),
-                ub=_fmt_num(row.get("utility_agent_b")),
+                us=_agent_compact_text(row, "utility_by_agent", _fmt_num),
                 sw=_fmt_num(row.get("social_welfare")),
                 np=_fmt_num(row.get("nash_product")),
                 wr=_fmt_pct(row.get("welfare_ratio_vs_best")),
                 nr=_fmt_pct(row.get("nash_ratio_vs_best")),
+                cf=_agent_compact_text(row, "calendar_conflict_ratio_by_agent", _fmt_pct),
             )
         )
 
@@ -632,8 +712,7 @@ def _build_quant_summary_md(aggregate: dict[str, Any], rows: list[dict[str, Any]
 def run_experiment(
     scenarios: list[dict[str, Any]],
     output_root: Path,
-    llm_a: LLMBackend,
-    llm_b: LLMBackend,
+    llms_by_agent: dict[str, LLMBackend],
     max_steps: int,
     seed: int,
     llm_max_new_tokens: int,
@@ -651,8 +730,7 @@ def run_experiment(
         print(f"[SCENARIO][{idx+1}/{total}] start id={scenario_id}", flush=True)
         scenario_report = run_single_scenario(
             scenario=scenario,
-            llm_a=llm_a,
-            llm_b=llm_b,
+            llms_by_agent=llms_by_agent,
             output_dir=output_root,
             max_steps=max_steps,
             seed=seed + idx,
