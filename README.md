@@ -103,6 +103,8 @@ python -m src.main full \
 
 - `experiment_summary.csv`: 시나리오별 정량평가 행 데이터
 - `experiment_summary.json`: 전체 평균/합의율 등 집계
+- `my_metrics.csv`: 새 `my_metrics` 블록의 시나리오별 flatten 결과
+- `my_metrics_summary.json`: `my_metrics`의 per-run/per-scenario 평균·표준편차 요약
 - `quant_summary.md`: 사람이 바로 읽을 수 있는 정량 요약 리포트
 - `quant_summary_human_readable.json`: 문자열 포맷(퍼센트 등) 적용한 정량 요약
 - `github_issue_collection.md`: 시나리오별 Issue 파일 목록 + 실험 개요
@@ -110,6 +112,7 @@ python -m src.main full \
 - `dataset_config_snapshot.json`: 실행에 사용한 dataset 식별정보(id/hash/path) 스냅샷
 - `scenario_xxxx/scenario.json`: 해당 시나리오 원본
 - `scenario_xxxx/metrics.json`: 해당 협상 지표
+  - 기존 metrics는 그대로 유지되고, 동일 레벨에 `my_metrics` 블록이 추가 저장됩니다.
 - `scenario_xxxx/metrics_human_readable.md`: 시나리오 단위 정량 요약
 - `scenario_xxxx/negmas_trace.jsonl`: `negmas` 레벨 협상 trace
 - `scenario_xxxx/agent_event_log.jsonl`: agent propose/respond + LLM prompt/raw 응답 포함 상세 로그
@@ -126,6 +129,7 @@ python -m src.main full \
 - `utility_by_agent`: 최종 합의안에서 agent별 효용
 - `reservation_by_agent`: agent별 reservation value
 - `calendar_conflict_ratio_by_agent`: agent별 캘린더 충돌 비율
+- `my_metrics`: 기존 metrics와 독립적으로 계산되는 추가 평가 블록
 - `social_welfare`: 모든 agent 효용 합
 - `nash_product`: 모든 agent에 대해 `Π max(u_i-r_i, 0)` 기반 Nash product
 - `pareto_optimal`: 최종 합의안의 파레토 최적 여부
@@ -154,3 +158,12 @@ python -m src.main full \
   - `llm-hybrid`: LLM 출력 + 최소 가드레일
   - `llm-only`: LLM 출력 중심으로 결정
 - `--require-explicit-accept` 기본값은 `True`입니다. 모델이 명시적으로 `ACTION: ACCEPT`를 출력하지 않으면 합의로 처리하지 않습니다.
+
+## my_metrics Smoke Test
+
+```bash
+python scripts/smoke_test_my_metrics.py
+```
+
+- 3 runs x 3 scenarios를 dummy backend로 실행해 `my_metrics` 저장/계산을 점검합니다.
+- 기본적으로 테스트 산출물은 실행 후 자동 정리됩니다. 보관하려면 `--keep-artifacts`를 사용하세요.

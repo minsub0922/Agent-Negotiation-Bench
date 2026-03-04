@@ -13,6 +13,7 @@ from negmas import LinearAdditiveUtilityFunction, SAOMechanism, make_issue
 from .agent_utils import scenario_agent_names
 from .evaluation import compute_metrics, enrich_event_for_human
 from .llm_backend import LLMBackend
+from .my_metrics import compute_my_metrics, finalize_my_metrics_shape
 from .negotiation import ISSUE_NAMES, EventRecorder, LLMCalendarNegotiator
 
 
@@ -491,13 +492,36 @@ def run_single_scenario(
         ufuns_by_agent=ufuns_by_agent,
         events=recorder.events,
     )
+    estimated_max_turns = max_steps * max(2, len(agent_names) * 2)
+    turns_for_fallback = sum(1 for e in recorder.events if str(e.get("message") or "").strip())
+    try:
+        computed_my = compute_my_metrics(
+            scenario=scenario,
+            metrics=metrics,
+            events=recorder.events,
+            ufuns_by_agent=ufuns_by_agent,
+            max_turns=estimated_max_turns,
+        )
+    except Exception as exc:
+        print(
+            f"[WARN] failed to compute my_metrics scenario={scenario.get('scenario_id')} error={exc}",
+            flush=True,
+        )
+        computed_my = None
+    my_metrics = finalize_my_metrics_shape(
+        my_metrics=computed_my,
+        agreement=bool(metrics.get("agreement_reached")),
+        turns=turns_for_fallback,
+    )
+    metrics_with_my = dict(metrics)
+    metrics_with_my["my_metrics"] = my_metrics
 
     _json_dump(
         scenario_out / "dialogue_human_readable.json",
         {
             "scenario_id": scenario["scenario_id"],
             "turns": human_dialogue,
-            "metrics": metrics,
+            "metrics": metrics_with_my,
         },
     )
 
@@ -506,19 +530,19 @@ def run_single_scenario(
         scenario_out=scenario_out,
         scenario_id=scenario["scenario_id"],
         chat_turns=chat_turns,
-        metrics=metrics,
+        metrics=metrics_with_my,
     )
 
-    _json_dump(scenario_out / "metrics.json", metrics)
+    _json_dump(scenario_out / "metrics.json", metrics_with_my)
     _text_dump(
         scenario_out / "metrics_human_readable.md",
-        _scenario_metrics_md(scenario_id=scenario["scenario_id"], metrics=metrics),
+        _scenario_metrics_md(scenario_id=scenario["scenario_id"], metrics=metrics_with_my),
     )
     _json_dump(scenario_out / "scenario.json", scenario)
 
     issue_bundle = _build_issue_bundle(
         scenario=scenario,
-        metrics=metrics,
+        metrics=metrics_with_my,
         chat_turns=chat_turns,
         human_dialogue=human_dialogue,
         trace_rows=trace_rows,
@@ -533,6 +557,7 @@ def run_single_scenario(
     return {
         "scenario_id": scenario["scenario_id"],
         "metrics": metrics,
+        "my_metrics": my_metrics,
         "result_summary": issue_bundle["result_summary"],
         "issue_json_file": issue_json_file,
         "issue_md_file": issue_md_file,
@@ -550,6 +575,85 @@ def _write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _flatten_dict(payload: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in payload.items():
+        full_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            out.update(_flatten_dict(value, prefix=full_key))
+        else:
+            out[full_key] = value
+    return out
+
+
+def _flatten_numeric(payload: dict[str, Any], prefix: str = "") -> dict[str, float]:
+    out: dict[str, float] = {}
+    for key, value in payload.items():
+        full_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            out.update(_flatten_numeric(value, prefix=full_key))
+        elif isinstance(value, bool):
+            out[full_key] = 1.0 if value else 0.0
+        elif isinstance(value, (int, float)):
+            out[full_key] = float(value)
+    return out
+
+
+def _write_my_metrics_outputs(
+    output_root: Path,
+    scenario_reports: list[dict[str, Any]],
+) -> None:
+    rows: list[dict[str, Any]] = []
+    numeric_by_metric: dict[str, list[float]] = {}
+    per_scenario_stats: dict[str, dict[str, Any]] = {}
+
+    for report in scenario_reports:
+        scenario_id = str(report.get("scenario_id"))
+        my_metrics = report.get("my_metrics") or {}
+        flat_all = _flatten_dict(my_metrics)
+        flat_numeric = _flatten_numeric(my_metrics)
+
+        row = {"scenario_id": scenario_id}
+        row.update(flat_all)
+        rows.append(row)
+
+        for metric_name, value in flat_numeric.items():
+            numeric_by_metric.setdefault(metric_name, []).append(value)
+
+        per_scenario_stats[scenario_id] = {
+            metric_name: {
+                "mean": value,
+                "std": 0.0,
+                "count": 1,
+            }
+            for metric_name, value in flat_numeric.items()
+        }
+
+    _write_summary_csv(output_root / "my_metrics.csv", rows)
+
+    metric_stats: dict[str, dict[str, Any]] = {}
+    for metric_name, values in numeric_by_metric.items():
+        if not values:
+            continue
+        mu = sum(values) / len(values)
+        variance = sum((v - mu) ** 2 for v in values) / len(values)
+        metric_stats[metric_name] = {
+            "mean": round(mu, 6),
+            "std": round(variance**0.5, 6),
+            "count": len(values),
+        }
+
+    _json_dump(
+        output_root / "my_metrics_summary.json",
+        {
+            "run_at": datetime.now().isoformat(),
+            "num_scenarios": len(scenario_reports),
+            "per_run": metric_stats,
+            "per_scenario": per_scenario_stats,
+        },
+    )
 
 
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -757,6 +861,7 @@ def run_experiment(
     quant_pretty = _build_quant_pretty(aggregate=aggregate, rows=all_metrics)
     _json_dump(output_root / "quant_summary_human_readable.json", quant_pretty)
     _text_dump(output_root / "quant_summary.md", _build_quant_summary_md(aggregate=aggregate, rows=all_metrics))
+    _write_my_metrics_outputs(output_root=output_root, scenario_reports=scenario_reports)
     _text_dump(
         output_root / "github_issue_collection.md",
         _build_issue_collection_md(scenario_reports=scenario_reports, aggregate=aggregate),
