@@ -16,6 +16,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+vLLM teacher 모델까지 사용할 경우:
+
+```bash
+pip install -r requirements-vllm.txt
+```
+
 ## 2) 데이터셋 생성
 
 ```bash
@@ -167,3 +173,92 @@ python scripts/smoke_test_my_metrics.py
 
 - 3 runs x 3 scenarios를 dummy backend로 실행해 `my_metrics` 저장/계산을 점검합니다.
 - 기본적으로 테스트 산출물은 실행 후 자동 정리됩니다. 보관하려면 `--keep-artifacts`를 사용하세요.
+
+## Synthetic Trace -> TRL 학습 -> 평가 파이프라인
+
+아래 기능이 추가되었습니다.
+
+- `generate-traces`: teacher 모델(vLLM/HF/dummy)로 다양한 협상 trace 생성 + SFT/DPO 학습 데이터 자동 추출
+- `build-training-data`: 기존 run 결과들에서 SFT/DPO 학습 데이터만 재생성
+- `train-sft`: TRL `SFTTrainer` 기반 타겟 모델 지도학습
+- `train-rl`: TRL `DPOTrainer` 기반 preference 최적화(RLHF 스타일)
+- `evaluate-models`: 여러 negotiator 모델을 동일 데이터셋에서 일괄 평가 + leaderboard 생성
+
+### 1) Teacher trace 생성 + 학습 데이터 구축
+
+```bash
+python -m src.main generate-traces \
+  --dataset data/scenarios.jsonl \
+  --llm-backend vllm \
+  --teacher-model-paths teacher_a=/models/teacher_a,teacher_b=/models/teacher_b \
+  --episodes-per-teacher 3 \
+  --temperature 0.8 \
+  --temperature-jitter 0.25 \
+  --top-p 0.92 \
+  --top-p-jitter 0.05 \
+  --shuffle-agent-order \
+  --shuffle-scenario-order \
+  --output-dir outputs/synthetic \
+  --trace-id teacher_mix_v1
+```
+
+생성 결과:
+
+- `outputs/synthetic/<trace_id>/runs/*`: episode별 협상 실행 결과
+- `outputs/synthetic/<trace_id>/training_data/sft_{train,eval}.jsonl`
+- `outputs/synthetic/<trace_id>/training_data/dpo_{train,eval}.jsonl`
+- `outputs/synthetic/<trace_id>/trace_generation_summary.{json,csv}`
+
+### 2) SFT 학습
+
+```bash
+python -m src.main train-sft \
+  --model-path /models/target_base \
+  --train-file outputs/synthetic/teacher_mix_v1/training_data/sft_train.jsonl \
+  --eval-file outputs/synthetic/teacher_mix_v1/training_data/sft_eval.jsonl \
+  --output-dir outputs/train/target_sft_v1 \
+  --max-seq-length 2048 \
+  --gradient-accumulation-steps 8 \
+  --learning-rate 2e-5 \
+  --num-train-epochs 1.5 \
+  --bf16 \
+  --use-lora
+```
+
+### 3) RL(DPO) 단계
+
+```bash
+python -m src.main train-rl \
+  --model-path outputs/train/target_sft_v1/final_model \
+  --ref-model-path /models/target_base \
+  --train-file outputs/synthetic/teacher_mix_v1/training_data/dpo_train.jsonl \
+  --eval-file outputs/synthetic/teacher_mix_v1/training_data/dpo_eval.jsonl \
+  --output-dir outputs/train/target_dpo_v1 \
+  --beta 0.1 \
+  --max-seq-length 2048 \
+  --max-prompt-length 1024 \
+  --gradient-accumulation-steps 8 \
+  --learning-rate 5e-6 \
+  --num-train-epochs 1.0 \
+  --bf16 \
+  --use-lora
+```
+
+### 4) 모델 평가 + 리더보드
+
+```bash
+python -m src.main evaluate-models \
+  --dataset data/scenarios.jsonl \
+  --llm-backend vllm \
+  --model-paths base=/models/target_base,sft=outputs/train/target_sft_v1/final_model,rl=outputs/train/target_dpo_v1/final_model \
+  --num-scenarios 100 \
+  --output-dir outputs/evaluations \
+  --eval-id negotiator_eval_v1
+```
+
+생성 결과:
+
+- `outputs/evaluations/<eval_id>/runs/*`: 모델별 상세 협상 로그/정량지표
+- `outputs/evaluations/<eval_id>/leaderboard.{json,csv,md}`
+
+세부 파이프라인 설명은 `docs/SYNTHETIC_NEGOTIATION_TRAINING_PIPELINE.md`를 참고하세요.
