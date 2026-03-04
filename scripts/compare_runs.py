@@ -12,6 +12,32 @@ from typing import Any
 MODE_CHOICES = ("answers", "answers-scores", "scores")
 
 
+METRIC_SPECS: dict[str, dict[str, str]] = {
+    "agreement": {"label": "agreement", "key": "agreement_reached", "format": "bool"},
+    "steps": {"label": "steps", "key": "negotiation_steps", "format": "int"},
+    "u_a": {"label": "u_a", "key": "utility_agent_a", "format": "float4"},
+    "u_b": {"label": "u_b", "key": "utility_agent_b", "format": "float4"},
+    "welfare": {"label": "welfare", "key": "social_welfare", "format": "float4"},
+    "welfare_ratio": {"label": "welfare_ratio", "key": "welfare_ratio_vs_best", "format": "pct"},
+    "nash": {"label": "nash", "key": "nash_product", "format": "float4"},
+    "nash_ratio": {"label": "nash_ratio", "key": "nash_ratio_vs_best", "format": "pct"},
+    "pareto": {"label": "pareto", "key": "pareto_optimal", "format": "bool"},
+    "fairness": {"label": "fairness", "key": "fairness_gap", "format": "float4"},
+    "conflict_a": {
+        "label": "conflict_a",
+        "key": "calendar_conflict_ratio_agent_a",
+        "format": "pct",
+    },
+    "conflict_b": {
+        "label": "conflict_b",
+        "key": "calendar_conflict_ratio_agent_b",
+        "format": "pct",
+    },
+}
+
+ALL_METRIC_ALIASES = tuple(METRIC_SPECS.keys())
+
+
 @dataclass
 class RunInfo:
     run_dir: Path
@@ -101,6 +127,56 @@ def _fmt_num(value: Any, digits: int = 4) -> str:
         return str(value)
 
 
+def _fmt_pct(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        v = float(value) * 100.0
+        return f"{v:.2f}%"
+    except Exception:
+        return str(value)
+
+
+def _parse_metric_aliases(raw: str) -> list[str]:
+    text = (raw or "").strip()
+    if not text or text.lower() == "all":
+        return list(ALL_METRIC_ALIASES)
+
+    aliases: list[str] = []
+    for token in text.split(","):
+        alias = token.strip()
+        if not alias:
+            continue
+        if alias not in METRIC_SPECS:
+            available = ", ".join(ALL_METRIC_ALIASES)
+            raise ValueError(f"Unknown metric alias '{alias}'. Available: {available}")
+        if alias not in aliases:
+            aliases.append(alias)
+
+    if not aliases:
+        available = ", ".join(ALL_METRIC_ALIASES)
+        raise ValueError(f"No valid metric alias provided. Available: {available}")
+    return aliases
+
+
+def _render_one_line_metrics(metrics: dict[str, Any], metric_aliases: list[str]) -> str:
+    parts: list[str] = []
+    for alias in metric_aliases:
+        spec = METRIC_SPECS[alias]
+        raw = metrics.get(spec["key"])
+        fmt = spec["format"]
+        if fmt == "bool":
+            value = _fmt_bool(raw)
+        elif fmt == "int":
+            value = _fmt_num(raw, 0)
+        elif fmt == "pct":
+            value = _fmt_pct(raw)
+        else:
+            value = _fmt_num(raw, 4)
+        parts.append(f"{spec['label']}={value}")
+    return " | ".join(parts)
+
+
 def _render_run_table(runs: list[RunInfo]) -> list[str]:
     lines = [
         "## Runs",
@@ -144,6 +220,8 @@ def _render_chat(
     chat_payload: dict[str, Any],
     metrics: dict[str, Any],
     max_turns: int,
+    one_line_metrics: bool,
+    metric_aliases: list[str],
 ) -> list[str]:
     chat_turns = list(chat_payload.get("chat", []))
     result_summary = chat_payload.get("result_summary") or (
@@ -155,6 +233,8 @@ def _render_chat(
         f"- Agreement: {_fmt_bool(metrics.get('agreement_reached'))}",
         f"- Result: {result_summary}",
     ]
+    if one_line_metrics:
+        lines.append(f"- Metrics: {_render_one_line_metrics(metrics, metric_aliases)}")
 
     if not chat_turns:
         lines.append("- Chat: (empty)")
@@ -184,7 +264,13 @@ def _render_chat(
     return lines
 
 
-def build_report(runs: list[RunInfo], mode: str, max_turns: int) -> str:
+def build_report(
+    runs: list[RunInfo],
+    mode: str,
+    max_turns: int,
+    one_line_metrics: bool,
+    metric_aliases: list[str],
+) -> str:
     all_scenarios = sorted({sid for run in runs for sid in run.scenario_data.keys()})
 
     lines: list[str] = [
@@ -217,7 +303,17 @@ def build_report(runs: list[RunInfo], mode: str, max_turns: int) -> str:
             lines.append("### Answers")
             lines.append("")
             for alias, run, metrics, chat in run_rows:
-                lines.extend(_render_chat(alias, run, chat, metrics, max_turns=max_turns))
+                lines.extend(
+                    _render_chat(
+                        alias,
+                        run,
+                        chat,
+                        metrics,
+                        max_turns=max_turns,
+                        one_line_metrics=one_line_metrics,
+                        metric_aliases=metric_aliases,
+                    )
+                )
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -249,6 +345,21 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Output markdown file path (if omitted, print to stdout)",
     )
+    parser.add_argument(
+        "--one-line-metrics",
+        action="store_true",
+        help="Show one-line metrics summary under each run result (answers/answers-scores modes)",
+    )
+    parser.add_argument(
+        "--metrics",
+        type=str,
+        default="all",
+        help=(
+            "Comma-separated metric aliases for --one-line-metrics. "
+            "Default: all. "
+            f"Available: {', '.join(ALL_METRIC_ALIASES)}"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -258,10 +369,18 @@ def main() -> None:
     if args.max_turns <= 0:
         raise ValueError("--max-turns must be > 0")
 
+    metric_aliases = _parse_metric_aliases(args.metrics)
+
     run_dirs = [Path(p).expanduser() for p in args.run_dirs]
     runs = [_load_run(p) for p in run_dirs]
 
-    report = build_report(runs, mode=args.mode, max_turns=args.max_turns)
+    report = build_report(
+        runs,
+        mode=args.mode,
+        max_turns=args.max_turns,
+        one_line_metrics=args.one_line_metrics,
+        metric_aliases=metric_aliases,
+    )
 
     if args.output is None:
         print(report)
